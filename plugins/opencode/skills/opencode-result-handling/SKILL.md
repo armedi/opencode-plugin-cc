@@ -10,7 +10,7 @@ user-invocable: false
 
 Return the companion's terminal report verbatim. It includes job status, session ID when available, and output or an error. Changed files appear only when captured; the report is not a full session trace.
 
-The rescue child only dispatches and waits. It does not summarize results, investigate failures, or implement a substitute solution.
+Claude dispatches and waits directly through Bash. Return OpenCode's report rather than implementing a substitute solution.
 
 ## Resuming Sessions
 
@@ -18,7 +18,7 @@ The rescue child only dispatches and waits. It does not summarize results, inves
 
 ## Inspecting Progress
 
-The parent can inspect progress when needed. The rescue child follows its agent's wait loop instead.
+Claude can inspect progress when needed while a background Bash waiter handles completion.
 
 ### Job Status
 
@@ -47,4 +47,4 @@ A completed tool-call message does not mean the job finished. Use companion stat
 
 ## When to Ask the User
 
-If session messages show repeated errors or prolonged lack of progress, the parent can ask whether to cancel or continue. The rescue child does not cancel jobs on its own.
+If session messages show repeated errors or prolonged lack of progress, ask whether to cancel or continue. Cancel only when the user requests it.

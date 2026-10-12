@@ -106,10 +106,17 @@ uses its configured default. Resuming reuses the same OpenCode session.
 
 Claude prepares the rescue prompt with the context needed for the request,
 referencing existing artifacts by path or URL and including conversation-only
-details inline. The child forwards only that prompt unchanged, not the raw
-command arguments. For `/opencode:rescue --fresh implement the plan`, this means
+details inline. Claude calls the companion directly with that prepared prompt,
+not through a forwarding Claude subagent or with raw command arguments.
+For `/opencode:rescue --fresh implement the plan`, this means
 supplying the plan's path or its inline contents; `--fresh` changes session
 routing, not context preparation.
+
+Foreground rescue waits through bounded companion calls. Background rescue uses
+a Claude background Bash waiter, whose completion notification returns the
+terminal report. Both modes retain companion job tracking and OpenCode sessions;
+no forwarding subagent or separate Monitor is needed. Status, result, and cancel
+remain available while a task runs.
 
 ### Permissions and review gate
 
@@ -167,8 +174,6 @@ opencode api get /api/session/<session-id>/message
 | `OPENCODE_PROMPT_TIMEOUT_MS` | `14400000` | Session completion timeout; interrupts the session on expiry |
 | `OPENCODE_COMPLETION_POLL_MS` | `5000` | Session completion poll interval |
 | `OPENCODE_COMPANION_DATA` | Self-derived | Override plugin data directory |
-| `OPENCODE_MONITOR_RESULT_CHARS` | Hook default | Maximum tool-result snippet length |
-| `OPENCODE_MONITOR_HEARTBEAT_POLLS` | Hook default | Polls between monitor heartbeats |
 
 `companion config --json` prints resolved settings (passwords are redacted).
 The old V1 idle/pgrep/strict-terminal environment settings are no longer used.

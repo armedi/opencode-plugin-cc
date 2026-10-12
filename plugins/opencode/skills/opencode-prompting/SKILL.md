@@ -6,7 +6,7 @@ user-invocable: false
 
 # OpenCode Prompting
 
-The parent prepares the prompt; the rescue child forwards it unchanged. OpenCode does not inherit the Claude conversation.
+Claude prepares the prompt and sends it directly through the companion. OpenCode does not inherit the Claude conversation.
 
 Give OpenCode the user's request and the context needed to carry it out. For an earlier plan, fix, or decision, reference its existing artifact by path or URL, or include the material inline if it exists only in chat.
 

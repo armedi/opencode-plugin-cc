@@ -924,8 +924,6 @@ async function handleConfig(argv) {
     ["OPENCODE_REQUEST_TIMEOUT_MS", "1800000", "Per-HTTP-request abort timeout"],
     ["OPENCODE_PROMPT_TIMEOUT_MS",  "14400000", "Session completion timeout"],
     ["OPENCODE_COMPLETION_POLL_MS", "5000", "Watcher poll interval during sendPrompt"],
-    ["OPENCODE_MONITOR_RESULT_CHARS","(hook)", "Monitor hook: max chars per tool-result snippet"],
-    ["OPENCODE_MONITOR_HEARTBEAT_POLLS","(hook)", "Monitor hook: polls between heartbeat pings"],
     ["OPENCODE_COMPANION_DATA",     "(self-derived)", "Override for plugin data dir"],
     ["OPENCODE_SERVER_URL",        "(discovered)", "Explicit V2 server URL (otherwise use the local service)"],
     ["OPENCODE_SERVER_PASSWORD",    "(unset)", "HTTP Basic auth password"],
