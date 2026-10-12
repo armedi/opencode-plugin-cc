@@ -37,7 +37,8 @@ Inside Claude Code:
 ```
 
 The installer clones this fork, caches version 2.0.0, installs its locked V2
-client dependencies, and registers `opencode@armedi-opencode-plugin-cc`.
+client dependencies, registers `opencode@armedi-opencode-plugin-cc`, and enables
+it at user scope in Claude Code's `settings.json`, preserving other settings.
 It tries SSH first, then HTTPS.
 
 If the upstream plugin is installed, uninstall it first to avoid duplicate
@@ -53,6 +54,20 @@ Then reload and verify:
 /reload-plugins
 /opencode:setup
 ```
+
+If you ran an older installer and `/opencode:setup` is missing, complete the
+Claude Code activation step:
+
+```text
+/plugin install opencode@armedi-opencode-plugin-cc
+```
+
+Choose **Install for you (user scope)** in the plugin panel. If it is already
+installed but disabled, enable it from the **Installed** tab (or run
+`/plugin enable opencode@armedi-opencode-plugin-cc`). Then run `/reload-plugins`
+and `/opencode:setup`. The marketplace was already registered by the installer;
+if Claude Code cannot find it, add it with
+`/plugin marketplace add armedi/opencode-plugin-cc` first.
 
 For a fuller diagnostic:
 

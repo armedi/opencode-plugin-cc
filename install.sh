@@ -13,11 +13,12 @@ PLUGIN_NAME="opencode"
 MARKETPLACE_NAME="armedi-opencode-plugin-cc"
 BRANCH="main"
 
-CLAUDE_DIR="$HOME/.claude"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 MARKETPLACES_DIR="$CLAUDE_DIR/plugins/marketplaces"
 CACHE_DIR="$CLAUDE_DIR/plugins/cache/$MARKETPLACE_NAME/$PLUGIN_NAME"
 KNOWN_MKT="$CLAUDE_DIR/plugins/known_marketplaces.json"
 INSTALLED="$CLAUDE_DIR/plugins/installed_plugins.json"
+SETTINGS="$CLAUDE_DIR/settings.json"
 
 # Colors
 RED='\033[0;31m'
@@ -115,6 +116,28 @@ with open('$INSTALLED', 'w') as f:
     json.dump(data, f, indent=2)
     f.write('\n')
 " || error "Failed to update installed_plugins.json"
+
+# --- Step 6: Enable the installed plugin at user scope ---
+# Cache/registry entries alone do not make slash commands available. Claude
+# Code loads plugins enabled in settings.json (the same setting /plugin install
+# and /plugin enable manage). Preserve every unrelated setting and plugin.
+python3 - "$SETTINGS" "$PLUGIN_NAME@$MARKETPLACE_NAME" <<'PY' || error "Failed to enable plugin. Run /plugin install opencode@armedi-opencode-plugin-cc inside Claude Code."
+import json, os, sys, tempfile
+settings_path, plugin_id = sys.argv[1:]
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+else:
+    settings = {}
+enabled = settings.setdefault('enabledPlugins', {})
+enabled[plugin_id] = True
+with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(settings_path), delete=False) as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+    tmp = f.name
+os.replace(tmp, settings_path)
+PY
+info "Plugin enabled at user scope."
 
 # --- Done ---
 echo ""
