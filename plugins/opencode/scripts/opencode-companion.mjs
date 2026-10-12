@@ -10,7 +10,7 @@ import fs from "node:fs";
 
 import { parseArgs, extractTaskText } from "./lib/args.mjs";
 import { isOpencodeInstalled, getOpencodeVersion, spawnDetached } from "./lib/process.mjs";
-import { isServerRunning, ensureServer, createClient, connect } from "./lib/opencode-server.mjs";
+import { isServerRunning, discoverServer, connect, extractResponseText } from "./lib/opencode-server.mjs";
 import { resolveWorkspace } from "./lib/workspace.mjs";
 import { loadState, updateState, upsertJob, generateJobId, jobDataPath, jobLogPath } from "./lib/state.mjs";
 import { buildStatusSnapshot, resolveResultJob, resolveCancelableJob, enrichJob, matchJobReference } from "./lib/job-control.mjs";
@@ -20,7 +20,6 @@ import { buildReviewPrompt, buildTaskPrompt } from "./lib/prompts.mjs";
 import { getDiff, getStatus as getGitStatus } from "./lib/git.mjs";
 import { readJson } from "./lib/fs.mjs";
 import { autoHealJob, autoHealJobs, getSessionLastActivity } from "./lib/auto-heal.mjs";
-import { ensureOpencodeConfig, readOpencodeConfig, missingPermissions, resolveConfigPath } from "./lib/opencode-config.mjs";
 import { stateRoot } from "./lib/state.mjs";
 import { runCommand } from "./lib/process.mjs";
 
@@ -80,15 +79,9 @@ async function handleSetup(argv) {
 
     if (serverRunning) {
       try {
-        const client = createClient("http://127.0.0.1:4096");
+        const client = await connect({ start: false, cwd: process.cwd() });
         const providerList = await client.listProviders();
-        if (Array.isArray(providerList?.connected)) {
-          // Current opencode API: GET /provider returns {all, default, connected}.
-          providers = providerList.connected;
-        } else if (Array.isArray(providerList)) {
-          // Older opencode API: GET /provider returned a bare array of providers.
-          providers = providerList.map((p) => p.id ?? p.name).filter(Boolean);
-        }
+        providers = providerList.data.map((p) => p.id);
       } catch {
         // Server may not be fully ready
       }
@@ -144,7 +137,7 @@ async function handleReview(argv) {
       const client = await connect({ cwd: workspace });
 
       report("reviewing", "Creating review session...");
-      const session = await client.createSession({ title: `Code Review ${job.id}` });
+      const session = await client.createSession({ title: `Code Review ${job.id}`, readOnly: true });
       upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
 
       const prompt = await buildReviewPrompt(workspace, {
@@ -198,7 +191,7 @@ async function handleAdversarialReview(argv) {
       const client = await connect({ cwd: workspace });
 
       report("reviewing", "Creating adversarial review session...");
-      const session = await client.createSession({ title: `Adversarial Review ${job.id}` });
+      const session = await client.createSession({ title: `Adversarial Review ${job.id}`, readOnly: true });
       upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
 
       const prompt = await buildReviewPrompt(workspace, {
@@ -253,7 +246,7 @@ async function handleTask(argv) {
   }
 
   const workspace = await resolveWorkspace();
-  const isWrite = options.write !== undefined ? options.write : true;
+  const isWrite = options.agent === "plan" ? false : options.write !== undefined ? options.write : true;
   const agentName = options.agent ?? (isWrite ? "build" : "plan");
 
   // Check for resume
@@ -325,7 +318,7 @@ async function handleTask(argv) {
         sessionId = resumeSessionId;
       } else {
         report("starting", "Creating new OpenCode session...");
-        const session = await client.createSession({ title: `Task ${job.id}` });
+        const session = await client.createSession({ title: `Task ${job.id}`, readOnly: !isWrite });
         sessionId = session.id;
       }
       upsertJob(workspace, { id: job.id, opencodeSessionId: sessionId });
@@ -337,6 +330,8 @@ async function handleTask(argv) {
 
       const response = await client.sendPrompt(sessionId, prompt, {
         agent: agentName,
+        model: options.model,
+        readOnly: !isWrite,
       });
 
       report("finalizing", "Processing task output...");
@@ -348,9 +343,7 @@ async function handleTask(argv) {
       if (isWrite) {
         try {
           const diff = await client.getSessionDiff(sessionId);
-          if (diff?.files) {
-            changedFiles = diff.files.map((f) => f.path || f.name).filter(Boolean);
-          }
+          changedFiles = diff.map((f) => f.file).filter(Boolean);
         } catch {
           // diff endpoint may not be available
         }
@@ -398,7 +391,7 @@ async function handleTaskWorker(argv) {
         sessionId = resumeSessionId;
         report("starting", `Resuming session ${resumeSessionId}...`);
       } else {
-        const session = await client.createSession({ title: `Task ${jobId}` });
+        const session = await client.createSession({ title: `Task ${jobId}`, readOnly: !isWrite });
         sessionId = session.id;
         report("starting", `Created session ${sessionId}`);
       }
@@ -409,6 +402,8 @@ async function handleTaskWorker(argv) {
 
       const response = await client.sendPrompt(sessionId, prompt, {
         agent: agentName,
+        model: options.model,
+        readOnly: !isWrite,
       });
 
       const text = extractResponseText(response);
@@ -520,10 +515,9 @@ async function handleStatus(argv) {
   // instead of a stale "investigating" phase from state.json. Runs in parallel
   // and gracefully falls back if the server is unreachable.
   if (snapshot.running.length > 0) {
-    const baseUrl = "http://127.0.0.1:4096";
     await Promise.all(snapshot.running.map(async (job) => {
       if (!job.opencodeSessionId) return;
-      const act = await getSessionLastActivity(baseUrl, job.opencodeSessionId);
+      const act = await getSessionLastActivity(job.opencodeSessionId, { cwd: workspace });
       if (!act) return;
       const age = act.ageSec != null ? `${act.ageSec}s ago` : "";
       if (act.kind === "tool") {
@@ -691,7 +685,7 @@ async function handleCancel(argv) {
   // Abort the OpenCode session if we have one
   if (job.opencodeSessionId) {
     try {
-      const client = createClient("http://127.0.0.1:4096");
+      const client = await connect({ start: false, cwd: workspace });
       await client.abortSession(job.opencodeSessionId);
     } catch {
       // Server may not be running
@@ -776,31 +770,6 @@ async function handleHeal(argv) {
  * @param {any} response
  * @returns {string}
  */
-function extractResponseText(response) {
-  if (typeof response === "string") return response;
-
-  // Response shape: { info: { ... }, parts: [ { type: "text", text: "..." }, ... ] }
-  if (response?.parts) {
-    return response.parts
-      .filter((p) => p.type === "text")
-      .map((p) => p.text)
-      .join("\n");
-  }
-
-  // Fallback: try info.content or just stringify
-  if (response?.info?.content) {
-    if (typeof response.info.content === "string") return response.info.content;
-    if (Array.isArray(response.info.content)) {
-      return response.info.content
-        .filter((p) => p.type === "text")
-        .map((p) => p.text)
-        .join("\n");
-    }
-  }
-
-  return JSON.stringify(response, null, 2);
-}
-
 // ------------------------------------------------------------------
 // Doctor (onboarding self-test + optional auto-repair)
 // ------------------------------------------------------------------
@@ -823,50 +792,29 @@ async function handleDoctor(argv) {
     push("opencode-binary", "PASS", which.stdout.trim(), null);
   } else {
     push("opencode-binary", "FAIL", "not in PATH",
-      "Install: npm i -g opencode-ai  OR  brew install opencode");
+      "Install OpenCode V2: https://opencode.ai/v2/docs/cli/");
   }
 
   // 2. opencode version
   const ver = await runCommand("opencode", ["--version"]).catch(() => ({ exitCode: 1, stdout: "" }));
-  if (ver.exitCode === 0) {
+  if (ver.exitCode === 0 && /(?:^|\s)v?2\./.test(ver.stdout)) {
     push("opencode-version", "PASS", ver.stdout.trim() || "(unknown)", null);
   } else {
-    push("opencode-version", "WARN", "could not resolve version", null);
+    push("opencode-version", "FAIL", ver.stdout.trim() || "could not resolve version", "OpenCode V2 is required.");
   }
 
-  // 3. opencode.json permissions (HEADLESS-SAFE — biggest footgun)
-  const cfg = readOpencodeConfig();
-  const missing = missingPermissions(cfg.data);
-  if (cfg.exists && missing.length === 0) {
-    push("opencode-config", "PASS", `${cfg.path} (all permissions allow)`, null);
-  } else {
-    const detail = cfg.exists
-      ? `${cfg.path} — missing: ${missing.join(", ")}`
-      : `${cfg.path} — file missing`;
-    if (fix) {
-      const r = ensureOpencodeConfig({ silent: true });
-      push("opencode-config", r.changed ? "PASS" : "WARN",
-        r.changed ? `fixed: ${r.path}` : detail, null);
-    } else {
-      push("opencode-config", "FAIL", detail,
-        "Run with --fix (or set: permission.{bash,edit,webfetch,external_directory} = \"allow\")");
-    }
-  }
+  // V2 honors the user's configuration. Never rewrite global permissions.
+  push("opencode-permissions", "PASS", "session-scoped headless policy; global config unchanged", null);
 
   // 4. server reachable
-  const serverUrl = "http://127.0.0.1:4096";
-  let reachable = false;
-  try {
-    const r = await fetch(`${serverUrl}/global/health`, { signal: AbortSignal.timeout(2000) });
-    reachable = r.ok;
-  } catch {
-    reachable = false;
-  }
+  const endpoint = await discoverServer().catch(() => undefined);
+  const serverUrl = endpoint?.url || "(not discovered)";
+  const reachable = await isServerRunning();
   if (reachable) {
     push("opencode-server", "PASS", `${serverUrl} reachable`, null);
   } else {
     push("opencode-server", "WARN", `${serverUrl} not reachable`,
-      "Start it: opencode serve --port 4096 &");
+      "Start OpenCode or run: opencode service start");
   }
 
   // 5. CLAUDE_PLUGIN_DATA sanity check
@@ -926,6 +874,8 @@ async function handleDoctor(argv) {
     ? "All good"
     : `${nWarn} warnings, ${nFail} failures${!fix ? " — run with --fix to repair" : ""}`;
 
+  if (nFail > 0) process.exitCode = 1;
+
   if (wantJson) {
     console.log(JSON.stringify({
       summary: { failures: nFail, warnings: nWarn, fix },
@@ -944,7 +894,6 @@ async function handleDoctor(argv) {
     else if (c.status !== "PASS" && c.hint) console.log(`       ${c.hint}`);
   }
   console.log(`\n${nFail + nWarn === 0 ? "OK" : "!! "} ${summary}`);
-  if (nFail > 0 && !fix) process.exit(1);
 }
 
 // ------------------------------------------------------------------
@@ -957,13 +906,12 @@ async function handleConfig(argv) {
 
   const envSpec = [
     ["OPENCODE_REQUEST_TIMEOUT_MS", "1800000", "Per-HTTP-request abort timeout"],
-    ["OPENCODE_PROMPT_TIMEOUT_MS",  "14400000", "sendPrompt absolute cap (race against server 5min body-close)"],
-    ["OPENCODE_IDLE_TIMEOUT_MS",    "900000", "Session idle watchdog (no activity → abort)"],
-    ["OPENCODE_PGREP_MISS_THRESHOLD","3", "Consecutive pgrep-misses before declaring bash tool stuck"],
+    ["OPENCODE_PROMPT_TIMEOUT_MS",  "14400000", "Session completion timeout"],
     ["OPENCODE_COMPLETION_POLL_MS", "5000", "Watcher poll interval during sendPrompt"],
     ["OPENCODE_MONITOR_RESULT_CHARS","(hook)", "Monitor hook: max chars per tool-result snippet"],
     ["OPENCODE_MONITOR_HEARTBEAT_POLLS","(hook)", "Monitor hook: polls between heartbeat pings"],
     ["OPENCODE_COMPANION_DATA",     "(self-derived)", "Override for plugin data dir"],
+    ["OPENCODE_SERVER_URL",        "(discovered)", "Explicit V2 server URL (otherwise use the local service)"],
     ["OPENCODE_SERVER_PASSWORD",    "(unset)", "HTTP Basic auth password"],
     ["OPENCODE_SERVER_USERNAME",    "opencode", "HTTP Basic auth username"],
   ];
@@ -971,7 +919,7 @@ async function handleConfig(argv) {
     const v = process.env[name];
     return {
       name,
-      value: v != null ? v : dflt,
+      value: name === "OPENCODE_SERVER_PASSWORD" && v ? "(redacted)" : v != null ? v : dflt,
       source: v != null ? "env" : (dflt.startsWith("(") ? "default" : "default"),
       description: desc,
     };
@@ -979,25 +927,15 @@ async function handleConfig(argv) {
 
   const workspace = await resolveWorkspace();
   const sRoot = stateRoot(workspace);
-  const cfg = readOpencodeConfig();
-  const missing = missingPermissions(cfg.data);
-  const serverUrl = "http://127.0.0.1:4096";
-  let serverReachable = false;
-  try {
-    const r = await fetch(`${serverUrl}/global/health`, { signal: AbortSignal.timeout(2000) });
-    serverReachable = r.ok;
-  } catch {}
+  const endpoint = await discoverServer().catch(() => undefined);
+  const serverUrl = endpoint?.url || "(not discovered)";
+  const serverReachable = await isServerRunning();
 
   const out = {
     env: envRows,
     workspace,
     stateRoot: sRoot,
-    opencodeConfig: {
-      path: cfg.path,
-      exists: cfg.exists,
-      permissionsOk: missing.length === 0,
-      missing,
-    },
+    permissions: "session-scoped; global config unchanged",
     server: { url: serverUrl, reachable: serverReachable },
   };
 
@@ -1009,7 +947,7 @@ async function handleConfig(argv) {
   console.log("## OpenCode Companion Config\n");
   console.log(`- Workspace: ${workspace}`);
   console.log(`- State dir: ${sRoot}`);
-  console.log(`- Config file: ${cfg.path} (${cfg.exists ? "exists" : "missing"}${missing.length ? ", missing: " + missing.join(",") : ", permissions OK"})`);
+  console.log(`- Permissions: ${out.permissions}`);
   console.log(`- Server: ${serverUrl} (${serverReachable ? "reachable" : "unreachable"})`);
   console.log("\n### Environment variables\n");
   for (const r of envRows) {

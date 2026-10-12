@@ -9,10 +9,9 @@
 // Monitor scripts never see the true finish.
 //
 // This module provides a best-effort reconciliation pass: given a job with
-// an `opencodeSessionId`, query the OpenCode server for the last assistant
-// message in that session. If it looks terminal, upsert the job as completed
-// and persist the text. If the worker process is gone and the session has
-// been idle long enough, mark as failed with a clear error message.
+// an `opencodeSessionId`, query the V2 session outcome and active drain state.
+// Persist completed results, surface failed/interrupted outcomes, and never
+// confuse a completed tool-call message or a dead worker with session completion.
 //
 // All functions are no-ops (or log to stderr and return the original job)
 // when the server is unreachable, so callers can sprinkle autoHealJob at
@@ -23,110 +22,21 @@ import path from "node:path";
 
 import { ensureDir } from "./fs.mjs";
 import { upsertJob, jobDataPath } from "./state.mjs";
-
-const DEFAULT_BASE_URL = "http://127.0.0.1:4096";
-const STRICT_TERMINAL = process.env.OPENCODE_STRICT_TERMINAL === "1";
-// A worker/session can be legitimately silent for a while (big model thinking,
-// slow tool) — only declare it dead after >60s of no session activity AND no
-// live task-worker process. 60s matches the spec.
-const STALE_IDLE_MS = 60_000;
-
-function buildHeaders() {
-  const headers = { "Content-Type": "application/json" };
-  if (process.env.OPENCODE_SERVER_PASSWORD) {
-    const user = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
-    const cred = Buffer.from(`${user}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString("base64");
-    headers["Authorization"] = `Basic ${cred}`;
-  }
-  return headers;
-}
+import { connect, createClient } from "./opencode-server.mjs";
 
 /**
- * True if the given PID is currently alive. Treats missing/invalid PID as dead.
- * @param {number|undefined|null} pid
- * @returns {boolean}
- */
-export function isProcessAlive(pid) {
-  if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    // Signal 0 is a permission/existence probe — no signal delivered.
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // ESRCH = no such process. EPERM = process exists but we can't signal it
-    // (still alive from our perspective).
-    return err.code === "EPERM";
-  }
-}
-
-/**
- * Extract visible text from an OpenCode message `parts` array.
- * @param {Array|undefined} parts
- * @returns {string}
- */
-function extractPartsText(parts) {
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((p) => p?.type === "text" && typeof p.text === "string")
-    .map((p) => p.text)
-    .join("\n");
-}
-
-/**
- * Query the opencode server for the terminal state of a session.
- *
- * Returns:
- *   { terminal: true,  finish, completed, text, info } when the last assistant
- *     message has info.time.completed >= startedAt AND typeof info.finish === 'string'.
- *   { terminal: false, reachable: true, lastUpdatedAt, lastInfo }           when session exists but no terminal marker.
- *   { terminal: false, reachable: false, error }                             when server unreachable / errored.
- *
- * @param {string} baseUrl
+ * Query V2 session completion without starting an unavailable service.
  * @param {string} sessionId
  * @param {number} startedAtMs - epoch ms; only treat completions >= this as ours
- * @param {object} [headers]
+ * @param {object} [opts]
  */
-export async function probeSessionTerminal(baseUrl, sessionId, startedAtMs, headers) {
-  const h = headers ?? buildHeaders();
+export async function probeSessionTerminal(sessionId, startedAtMs, opts = {}) {
   try {
-    // limit=1 → last message only. On glm-5 / opencode 1.4.x this returns
-    // an array of { info, parts } objects.
-    const res = await fetch(`${baseUrl}/session/${sessionId}/message?limit=1`, {
-      method: "GET",
-      headers: h,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      return { terminal: false, reachable: true, error: `HTTP ${res.status}` };
-    }
-    const arr = await res.json();
-    const last = Array.isArray(arr) ? arr[arr.length - 1] : null;
-    const info = last?.info;
-    if (!info) {
-      return { terminal: false, reachable: true, lastUpdatedAt: 0, lastInfo: null };
-    }
-
-    const completed = typeof info.time?.completed === "number" ? info.time.completed : 0;
-    const created = typeof info.time?.created === "number" ? info.time.created : 0;
-    const lastUpdatedAt = Math.max(completed, created);
-
-    const looksTerminal =
-      info.role === "assistant" &&
-      completed >= (startedAtMs || 0) &&
-      (STRICT_TERMINAL
-        ? typeof info.finish === "string"
-        : typeof info.finish === "string" || completed > 0);
-
-    if (looksTerminal) {
-      return {
-        terminal: true,
-        finish: info.finish,
-        completed,
-        text: extractPartsText(last.parts),
-        info,
-      };
-    }
-    return { terminal: false, reachable: true, lastUpdatedAt, lastInfo: info };
+    const client = opts.baseUrl
+      ? createClient(opts.baseUrl, { directory: opts.cwd, headers: opts.headers })
+      : await connect({ start: false, cwd: opts.cwd });
+    const result = await client.readSessionResult(sessionId, startedAtMs);
+    return { ...result, reachable: true };
   } catch (err) {
     return { terminal: false, reachable: false, error: err.message };
   }
@@ -142,25 +52,19 @@ export async function probeSessionTerminal(baseUrl, sessionId, startedAtMs, head
  *   { kind:"text", text, ageSec }                — last part is text
  *   { kind:"none", ageSec }                      — session has info but empty parts
  *
- * @param {string} baseUrl
  * @param {string} sessionId
+ * @param {object} [opts]
  * @returns {Promise<object|null>}
  */
-export async function getSessionLastActivity(baseUrl, sessionId) {
+export async function getSessionLastActivity(sessionId, opts = {}) {
   if (!sessionId) return null;
-  const h = buildHeaders();
   try {
-    const res = await fetch(`${baseUrl}/session/${sessionId}/message?limit=1`, {
-      method: "GET",
-      headers: h,
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) return null;
-    const arr = await res.json();
-    const last = Array.isArray(arr) ? arr[arr.length - 1] : null;
+    const client = await connect({ start: false, cwd: opts.cwd });
+    const arr = await client.getMessages(sessionId, { limit: 1, type: "assistant" });
+    const last = arr[0];
     if (!last) return null;
-    const info = last.info;
-    const parts = Array.isArray(last.parts) ? last.parts : [];
+    const info = last;
+    const parts = Array.isArray(last.content) ? last.content : [];
 
     const updatedMs = Math.max(
       typeof info?.time?.completed === "number" ? info.time.completed : 0,
@@ -176,7 +80,7 @@ export async function getSessionLastActivity(baseUrl, sessionId) {
         const tool = p.tool || "tool";
         let command = "";
         const input = p.state?.input || p.input || {};
-        if (tool === "bash") command = String(input.command || input.cmd || "");
+        if (tool === "shell") command = String(input.command || input.cmd || "");
         else if (tool === "edit" || tool === "write") command = String(input.filePath || input.file_path || input.path || "");
         else if (tool === "read") command = String(input.filePath || input.file_path || input.path || "");
         else command = JSON.stringify(input).slice(0, 120);
@@ -213,7 +117,6 @@ function toEpochMs(v) {
  * @param {boolean} [opts.dryRun] - when true, do not write state; return `{job, action, details}`
  */
 export async function autoHealJob(workspace, job, opts = {}) {
-  const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
   const dryRun = !!opts.dryRun;
   const HEALABLE = new Set(["starting", "investigating", "running", "finalizing"]);
 
@@ -230,7 +133,14 @@ export async function autoHealJob(workspace, job, opts = {}) {
     toEpochMs(job.updatedAt) ||
     0;
 
-  const probe = await probeSessionTerminal(baseUrl, job.opencodeSessionId, startedAtMs);
+  const probe = await probeSessionTerminal(job.opencodeSessionId, startedAtMs, { ...opts, cwd: workspace });
+
+  if (probe.terminal && probe.outcome !== "succeeded") {
+    const errorMessage = probe.error || `OpenCode session ${probe.outcome || "failed"}`;
+    if (dryRun) return { job, action: "would-fail", details: { errorMessage } };
+    upsertJob(workspace, { id: job.id, status: "failed", errorMessage, completedAt: new Date(probe.completed).toISOString(), healed: true });
+    return { job: { ...job, status: "failed", errorMessage, healed: true }, action: "healed-failed", details: { errorMessage } };
+  }
 
   if (probe.terminal) {
     const completedIso = new Date(probe.completed).toISOString();
@@ -279,62 +189,13 @@ export async function autoHealJob(workspace, job, opts = {}) {
     };
   }
 
-  // Not terminal. Can we at least declare it dead?
+  // A dead companion worker does not imply a dead V2 server-side session.
+  // Keep jobs resumable when the service is unavailable or still running.
   if (!probe.reachable) {
-    const updatedMs = toEpochMs(job.updatedAt);
-    const idleMs = updatedMs ? Date.now() - updatedMs : Infinity;
-    if (!isProcessAlive(job.pid) && idleMs >= STALE_IDLE_MS) {
-      const errMsg = "server unreachable while worker dead";
-      if (dryRun) {
-        return { job, action: "would-fail", details: { errorMessage: errMsg } };
-      }
-
-      upsertJob(workspace, {
-        id: job.id,
-        status: "failed",
-        completedAt: new Date().toISOString(),
-        errorMessage: errMsg,
-        healed: true,
-      });
-      return {
-        job: { ...job, status: "failed", errorMessage: errMsg, healed: true },
-        action: "healed-failed",
-        details: { errorMessage: errMsg },
-      };
-    }
     return { job, action: "skip", reason: `server unreachable: ${probe.error}` };
   }
 
-  const workerAlive = isProcessAlive(job.pid);
-  if (workerAlive) {
-    return { job, action: "skip", reason: "worker still alive" };
-  }
-
-  const lastUpdateMs = probe.lastUpdatedAt || toEpochMs(job.updatedAt);
-  const idleMs = lastUpdateMs ? Date.now() - lastUpdateMs : Infinity;
-  if (idleMs < STALE_IDLE_MS) {
-    return { job, action: "skip", reason: `idle ${Math.floor(idleMs / 1000)}s < ${STALE_IDLE_MS / 1000}s threshold` };
-  }
-
-  const idleSec = Number.isFinite(idleMs) ? Math.floor(idleMs / 1000) : -1;
-  const errMsg = `task-worker exited without completion; session last updated ${idleSec}s ago`;
-
-  if (dryRun) {
-    return { job, action: "would-fail", details: { errorMessage: errMsg } };
-  }
-
-  upsertJob(workspace, {
-    id: job.id,
-    status: "failed",
-    completedAt: new Date().toISOString(),
-    errorMessage: errMsg,
-    healed: true,
-  });
-  return {
-    job: { ...job, status: "failed", errorMessage: errMsg, healed: true },
-    action: "healed-failed",
-    details: { errorMessage: errMsg },
-  };
+  return { job, action: "skip", reason: "session has not completed this job" };
 }
 
 /**

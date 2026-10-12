@@ -72,7 +72,8 @@ export function renderResult(job, resultData) {
       lines.push(`### Output\n\n${resultData.rendered}`);
     } else if (resultData.messages) {
       // Extract the last assistant message
-      const assistantMsgs = resultData.messages.filter((m) => m.role === "assistant");
+      const messages = Array.isArray(resultData.messages) ? resultData.messages : [resultData.messages];
+      const assistantMsgs = messages.filter((m) => m.type === "assistant" || m.role === "assistant");
       const last = assistantMsgs[assistantMsgs.length - 1];
       if (last) {
         const text = extractMessageText(last);
@@ -172,7 +173,7 @@ export function renderSetup(status) {
   if (status.providers?.length > 0) {
     lines.push(`- **Configured Providers**: ${status.providers.join(", ")}`);
   } else if (status.installed) {
-    lines.push(`- **Providers**: None configured. Run \`!opencode providers\` to set up.`);
+    lines.push(`- **Providers**: None configured. Open OpenCode and run \`/connect\` to sign in.`);
   }
   if (status.reviewGate !== undefined) {
     lines.push(`- **Review Gate**: ${status.reviewGate ? "Enabled" : "Disabled"}`);

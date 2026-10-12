@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # One-line installer for opencode-plugin-cc
 # Usage (inside Claude Code):
-#   ! curl -fsSL https://raw.githubusercontent.com/tasict/opencode-plugin-cc/main/install.sh | bash
+#   ! curl -fsSL https://raw.githubusercontent.com/armedi/opencode-plugin-cc/main/install.sh | bash
 #
 # Or clone + run locally:
-#   ! bash <(curl -fsSL https://raw.githubusercontent.com/tasict/opencode-plugin-cc/main/install.sh)
+#   ! bash <(curl -fsSL https://raw.githubusercontent.com/armedi/opencode-plugin-cc/main/install.sh)
 
 set -euo pipefail
 
-REPO="tasict/opencode-plugin-cc"
+REPO="armedi/opencode-plugin-cc"
 PLUGIN_NAME="opencode"
-MARKETPLACE_NAME="tasict-opencode-plugin-cc"
+MARKETPLACE_NAME="armedi-opencode-plugin-cc"
 BRANCH="main"
 
 CLAUDE_DIR="$HOME/.claude"
@@ -31,6 +31,9 @@ error() { echo -e "${RED}[opencode-plugin]${NC} $1"; exit 1; }
 
 # --- Pre-checks ---
 [ -d "$CLAUDE_DIR" ] || error "Claude Code directory not found at $CLAUDE_DIR. Is Claude Code installed?"
+command -v node >/dev/null || error "Node.js 22 or later is required."
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || error "Node.js 22 or later is required."
+command -v npm >/dev/null || error "npm is required to install the V2 client."
 
 mkdir -p "$CLAUDE_DIR/plugins/marketplaces" "$CLAUDE_DIR/plugins/cache"
 
@@ -67,6 +70,7 @@ CACHE_VERSION_DIR="$CACHE_DIR/$VERSION"
 rm -rf "$CACHE_VERSION_DIR"
 mkdir -p "$CACHE_VERSION_DIR"
 cp -R "$MKT_DIR/plugins/$PLUGIN_NAME/." "$CACHE_VERSION_DIR/"
+npm --prefix "$CACHE_VERSION_DIR" ci --omit=dev --ignore-scripts --workspaces=false
 info "Plugin cached at $CACHE_VERSION_DIR"
 
 # --- Step 4: Register marketplace in known_marketplaces.json ---

@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveWorkspace } from "./lib/workspace.mjs";
 import { loadState } from "./lib/state.mjs";
-import { isServerRunning, connect } from "./lib/opencode-server.mjs";
+import { isServerRunning, connect, extractResponseText } from "./lib/opencode-server.mjs";
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(import.meta.dirname, "..");
 
@@ -58,14 +58,14 @@ async function main() {
 
   try {
     const client = await connect({ cwd: workspace });
-    const session = await client.createSession({ title: "Stop Review Gate" });
+    const session = await client.createSession({ title: "Stop Review Gate", readOnly: true });
 
     const response = await client.sendPrompt(session.id, prompt, {
       agent: "plan", // read-only review
     });
 
     // Extract the verdict
-    const text = extractText(response);
+    const text = extractResponseText(response);
     const firstLine = text.trim().split("\n")[0];
 
     if (firstLine.startsWith("BLOCK")) {
@@ -80,17 +80,6 @@ async function main() {
     // On error, allow the stop (don't block on failures)
     console.log(`ALLOW: Review gate error: ${err.message}`);
   }
-}
-
-function extractText(response) {
-  if (typeof response === "string") return response;
-  if (response?.parts) {
-    return response.parts
-      .filter((p) => p.type === "text")
-      .map((p) => p.text)
-      .join("\n");
-  }
-  return JSON.stringify(response);
 }
 
 main().catch((err) => {

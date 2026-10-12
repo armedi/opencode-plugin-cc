@@ -10,7 +10,7 @@ user-invocable: false
 
 OpenCode returns results as structured session data containing:
 - **Messages**: The full conversation between the user prompt and OpenCode's agent
-- **Tool calls**: All tool invocations (bash, edit, read, write, grep, glob, etc.)
+- **Tool calls**: All tool invocations (shell, edit, read, write, grep, glob, etc.)
 - **File changes**: Diffs of all files modified during the session
 - **Status**: Whether the session completed successfully, was aborted, or errored
 
@@ -44,33 +44,36 @@ Returns JSON with `job.status`, `job.phase`, `job.elapsed`, `job.opencodeSession
 
 ### Layer 2: Full tool-call trace (fine, every action)
 
-OpenCode runs a local HTTP server on `http://localhost:4096` that exposes every message and tool call in every session. Hitting the messages endpoint gives you the **complete live trace of what opencode is doing** — bash commands it ran, file reads, edits, assistant reasoning text, tool results. This is the best signal for "what has opencode actually done so far."
+Use the V2 CLI to inspect the session trace. It discovers the background service and supplies authentication; the service does not have a fixed port.
 
 ```bash
-curl -s http://localhost:4096/session/<sessionId>/message
+opencode api get /api/session/<sessionId>/message
 ```
 
-Get `<sessionId>` from Layer 1's `job.opencodeSessionId` (format `ses_XXXXXXXXX...`). Returns a JSON array where each element has `.info.role` (`user` / `assistant`) and `.parts[]` with:
-- `type: "text"` → `part.text` is the assistant's reasoning or commentary
-- `type: "tool"` → `part.tool` is the tool name, `part.state.input` is the tool args, `part.state.status` is `pending` / `running` / `completed` / `error`
+Get `<sessionId>` from Layer 1's `job.opencodeSessionId`. The response contains `data` (messages) and `cursor` (pagination). Messages have `type`, `time`, and assistant `content[]`:
+- `type: "text"` → `part.text` is visible assistant output
+- `type: "reasoning"` → reasoning, separate from visible output
+- `type: "tool"` → `part.tool`, `part.input`, and `part.state` describe the invocation
+
+A completed assistant message may end with `finish: "tool-calls"` while the agent continues. Use companion status for whole-job completion; V2 session outcomes are `succeeded`, `failed`, or `interrupted`.
 
 Typical usage — tail the last N messages for a quick "what is it doing now":
 
 ```bash
-curl -s http://localhost:4096/session/<sessionId>/message | python3 -c '
+opencode api get /api/session/<sessionId>/message | python3 -c '
 import json, sys
-msgs = json.load(sys.stdin)
-for m in msgs[-10:]:
-  role = m.get("info", {}).get("role", "?")
-  for p in m.get("parts", []):
+msgs = json.load(sys.stdin)["data"]
+for m in msgs[:10]:
+  role = m.get("type", "?")
+  for p in m.get("content", []):
     t = p.get("type")
     if t == "text":
-      print(f"  [{role}/text] {p.get(\"text\",\"\")[:200]}")
+      print("  [{}/text] {}".format(role, p.get("text", "")[:200]))
     elif t == "tool":
       st = p.get("state", {})
-      inp = st.get("input", {}) or {}
+      inp = p.get("input", {}) or {}
       cmd = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
-      print(f"  [{role}/tool/{p.get(\"tool\")}/{st.get(\"status\")}] {str(cmd)[:160]}")
+      print("  [{}/tool/{}/{}] {}".format(role, p.get("tool"), st.get("status"), str(cmd)[:160]))
 '
 ```
 

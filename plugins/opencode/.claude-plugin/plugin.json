@@ -1,7 +1,7 @@
 {
   "name": "opencode",
-  "version": "1.1.0",
-  "description": "Use OpenCode from Claude Code to review code or delegate tasks.",
+  "version": "2.0.0",
+  "description": "Use OpenCode V2 from Claude Code to review code or delegate tasks.",
   "author": {
     "name": "OpenCode Community"
   }

@@ -97,7 +97,7 @@ function buildReminder(taskIds, companionPath) {
     `   node "${companionPath}" status <task-id> --json | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{try{const j=JSON.parse(s).job||{};process.stdout.write(j.status+\"|\"+j.phase+\"|\"+j.elapsed)}catch(e){process.stdout.write(\"parse-err\")}})'`,
     "",
     "2. If still `running`, inspect live tool-call trace (opencode-result-handling skill, Layer 2):",
-    "   `curl -s http://localhost:4096/session/<opencodeSessionId>/message | python3 ...`",
+    "   `opencode api get /api/session/<opencodeSessionId>/message` (V2 service discovery and authentication)",
     "   `<opencodeSessionId>` is in the status JSON's `job.opencodeSessionId`.",
     "",
     "3. Once status is terminal (`completed` / `failed` / `cancelled`), fetch the real result:",
