@@ -103,6 +103,11 @@ export function renderResult(job, resultData) {
  * @param {object} review
  * @returns {string}
  */
+export function renderNativeReview(text, target) {
+  const body = String(text ?? "").trim() || "OpenCode review completed without any output.";
+  return [`# OpenCode Review`, "", `Target: ${target.label}`, "", body, ""].join("\n");
+}
+
 export function renderReview(review) {
   const lines = [];
 

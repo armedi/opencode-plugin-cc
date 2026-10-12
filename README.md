@@ -92,7 +92,7 @@ Delegate a task:
 
 | Command | Purpose |
 | --- | --- |
-| `/opencode:review` | Read-only code review; supports `--base <ref>` |
+| `/opencode:review` | OpenCode's built-in `/review`; supports `--base <ref>` and `--scope` |
 | `/opencode:adversarial-review` | Read-only challenge review with optional focus text |
 | `/opencode:rescue` | Delegate work; supports `--model`, `--agent`, `--resume`, `--fresh`, `--background` |
 | `/opencode:status` | Running/recent jobs for the current repository |
@@ -112,9 +112,13 @@ Other configured permissions remain in effect. If an operation requests approval
 the companion interrupts the session and reports the requested action/resources;
 add an appropriately narrow allow rule yourself before retrying.
 
-Read-only sessions additionally deny edits, shell execution, and subagents.
+Read-only task sessions additionally deny edits, shell execution, and subagents.
 They can inspect code through read/glob/grep tools, but cannot run tests or shell
-commands. This is permission enforcement, not an OS sandbox; custom tools/plugins
+commands. `/opencode:review` is different: it runs OpenCode's built-in `/review`
+on the plan agent, and that command collects the diff with git, so the review
+session allows shell and subagents while still denying edits and questions.
+Adversarial review and the stop gate use that same review permission set.
+This is permission enforcement, not an OS sandbox; custom tools/plugins
 must also enforce their own permissions. A resumed read-only session retains
 its restrictions; use `--fresh` when switching to writable work.
 

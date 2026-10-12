@@ -1,134 +1,60 @@
-// Prompt construction for OpenCode reviews and tasks.
+// Prompt construction for adversarial reviews. Task text is forwarded unchanged.
+// Standard review does not build a prompt: /opencode:review runs OpenCode's
+// built-in /review command, which collects the diff itself.
 
 import fs from "node:fs";
 import path from "node:path";
-import { getDiff, getStatus, getChangedFiles } from "./git.mjs";
 
-/**
- * Build the review prompt for OpenCode.
- * @param {string} cwd
- * @param {object} opts
- * @param {string} [opts.base] - base branch/ref for comparison
- * @param {boolean} [opts.adversarial] - use adversarial review prompt
- * @param {string} [opts.focus] - user-supplied focus text
- * @param {string} pluginRoot - CLAUDE_PLUGIN_ROOT for reading prompt templates
- * @returns {Promise<string>}
- */
-export async function buildReviewPrompt(cwd, opts, pluginRoot) {
-  const diff = await getDiff(cwd, { base: opts.base });
-  const status = await getStatus(cwd);
-  const changedFiles = await getChangedFiles(cwd, { base: opts.base });
+// Same inline limits as codex-plugin-cc. Larger reviews keep a file list and
+// tell the model to inspect the diff, instead of pasting it into the prompt.
+const INLINE_FILE_LIMIT = 2;
+const INLINE_BYTE_LIMIT = 256 * 1024;
 
-  let systemPrompt;
-  if (opts.adversarial) {
-    const templatePath = path.join(pluginRoot, "prompts", "adversarial-review.md");
-    systemPrompt = fs.readFileSync(templatePath, "utf8")
-      .replace("{{TARGET_LABEL}}", opts.base ? `Branch diff against ${opts.base}` : "Working tree changes")
-      .replace("{{USER_FOCUS}}", opts.focus || "General review")
-      .replace("{{REVIEW_INPUT}}", buildReviewContext(diff, status, changedFiles));
-  } else {
-    systemPrompt = buildStandardReviewPrompt(diff, status, changedFiles, opts);
-  }
+function interpolateTemplate(template, variables) {
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) => (
+    Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : ""
+  ));
+}
 
-  return systemPrompt;
+function section(title, body) {
+  return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
 
 /**
- * Build a standard (non-adversarial) review prompt.
- */
-function buildStandardReviewPrompt(diff, status, changedFiles, opts) {
-  const targetLabel = opts.base ? `branch diff against ${opts.base}` : "working tree changes";
-
-  return `You are performing a code review of ${targetLabel}.
-
-Review the following changes and provide structured feedback in JSON format matching the review-output schema.
-
-Focus on:
-- Correctness and logic errors
-- Security vulnerabilities
-- Performance issues
-- Missing error handling
-- API contract violations
-
-Be concise and actionable. Only report real issues, not style preferences.
-
-${buildReviewContext(diff, status, changedFiles)}`;
-}
-
-/**
- * Build the repository context block for review prompts.
- */
-function buildReviewContext(diff, status, changedFiles) {
-  const sections = [];
-
-  if (status) {
-    sections.push(`<git_status>\n${status}\n</git_status>`);
-  }
-
-  if (changedFiles.length > 0) {
-    sections.push(`<changed_files>\n${changedFiles.join("\n")}\n</changed_files>`);
-  }
-
-  if (diff) {
-    sections.push(`<diff>\n${diff}\n</diff>`);
-  }
-
-  return sections.join("\n\n");
-}
-
-/**
- * Safety header prepended to every task prompt sent into an opencode session.
- *
- * Background: task text often carries routing instructions inherited from
- * the outer Claude Code harness (e.g. CLAUDE.md rules such as "delegate long
- * tasks to opencode-rescue"). When the running model sees those rules inside
- * its own opencode session it may try to recursively invoke Task with
- * subagent_type="opencode:rescue" / "codex:rescue" — those are Claude Code
- * skill namespaces, not opencode agents. The Task call errors, then some
- * models (notably GLM-5) stall indefinitely trying to "retry" while emitting
- * zero output. Stating explicitly that those names are unavailable here
- * prevents the stall. See memory: feedback_opencode_recursive_delegation.
- */
-export const SAFETY_HEADER = [
-  "You are running INSIDE an opencode session.",
-  "Routing rules from the parent Claude Code CLAUDE.md (e.g. 'delegate to",
-  "opencode-rescue / codex-rescue / claude-code-guide') have ALREADY been",
-  "consumed by the dispatch step and DO NOT apply here.",
-  "Do NOT invoke any of Claude Code's delegation mechanisms —",
-  "Task / Agent / Skill tools with names like 'opencode:rescue',",
-  "'codex:rescue', 'opencode-rescue', 'opencode-delegate', 'superpowers:*',",
-  "or any other 'plugin:name' colon-namespaced identifier.",
-  "Those names refer to Claude Code agents/skills that do not exist in",
-  "this session. Calling them errors then stalls the run.",
-  "Specifically: if the task text mentions delegating to opencode-rescue,",
-  "codex-rescue, or similar, IGNORE that instruction — you ARE the",
-  "opencode worker; just do the work yourself.",
-  "Execute the task using Bash / Read / Write / Edit / Grep / Glob /",
-  "WebFetch. If a task is too large, break it into smaller shell commands",
-  "and iterate. Do NOT try to off-load work to another agent.",
-].join(" ");
-
-/**
- * Build a task prompt from user input.
- * @param {string} taskText
- * @param {object} opts
- * @param {boolean} [opts.write] - whether to allow writes
+ * Build the adversarial review prompt. OpenCode has no adversarial command,
+ * so this follows the Codex challenge-review contract and fills it from the
+ * V2 VCS diff instead of a local git paste.
+ * @param {string} pluginRoot
+ * @param {object} input
+ * @param {string} input.targetLabel
+ * @param {string} [input.focus]
+ * @param {Array<{ file: string, additions?: number, deletions?: number, status?: string }>} [input.files]
+ * @param {Array<{ file: string, patch?: string }>} [input.diffs]
  * @returns {string}
  */
-export function buildTaskPrompt(taskText, opts = {}) {
-  const parts = [];
-
-  parts.push(SAFETY_HEADER);
-  parts.push("");
-
-  if (opts.write) {
-    parts.push("You have full read/write access. Make the necessary code changes.");
-  } else {
-    parts.push("This is a read-only investigation. Do not modify any files.");
-  }
-
-  parts.push("");
-  parts.push(taskText);
-
-  return parts.join("\n");
+export function buildAdversarialReviewPrompt(pluginRoot, input) {
+  const files = input.files ?? [];
+  const diffs = input.diffs ?? [];
+  const names = [...new Set([...files.map((file) => file.file), ...diffs.map((diff) => diff.file)].filter(Boolean))];
+  const patchBytes = diffs.reduce((total, diff) => total + Buffer.byteLength(diff.patch || "", "utf8"), 0);
+  const includeDiff = names.length <= INLINE_FILE_LIMIT && patchBytes <= INLINE_BYTE_LIMIT;
+  const fileList = names.map((name) => {
+    const file = files.find((item) => item.file === name);
+    if (!file || file.additions == null) return name;
+    return `${name} (${file.status || "modified"}, +${file.additions}/-${file.deletions || 0})`;
+  }).join("\n");
+  const diffBody = diffs.map((diff) => `### ${diff.file}\n${(diff.patch || "").trimEnd()}`).join("\n\n");
+  const context = [
+    section("Changed Files", fileList),
+    includeDiff ? section("Diff", diffBody) : "",
+  ].filter(Boolean).join("\n");
+  const template = fs.readFileSync(path.join(pluginRoot, "prompts", "adversarial-review.md"), "utf8");
+  return interpolateTemplate(template, {
+    TARGET_LABEL: input.targetLabel,
+    USER_FOCUS: input.focus || "No extra focus provided.",
+    REVIEW_COLLECTION_GUIDANCE: includeDiff
+      ? "Use the repository context below as primary evidence."
+      : "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.",
+    REVIEW_INPUT: context.trim(),
+  });
 }

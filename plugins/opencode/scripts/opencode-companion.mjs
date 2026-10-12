@@ -15,9 +15,8 @@ import { resolveWorkspace } from "./lib/workspace.mjs";
 import { loadState, updateState, upsertJob, generateJobId, jobDataPath, jobLogPath } from "./lib/state.mjs";
 import { buildStatusSnapshot, resolveResultJob, resolveCancelableJob, enrichJob, matchJobReference } from "./lib/job-control.mjs";
 import { createJobRecord, runTrackedJob, getClaudeSessionId } from "./lib/tracked-jobs.mjs";
-import { renderStatus, renderResult, renderReview, renderSetup } from "./lib/render.mjs";
-import { buildReviewPrompt, buildTaskPrompt } from "./lib/prompts.mjs";
-import { getDiff, getStatus as getGitStatus } from "./lib/git.mjs";
+import { renderStatus, renderResult, renderReview, renderNativeReview, renderSetup } from "./lib/render.mjs";
+import { buildAdversarialReviewPrompt } from "./lib/prompts.mjs";
 import { readJson } from "./lib/fs.mjs";
 import { autoHealJob, autoHealJobs, getSessionLastActivity } from "./lib/auto-heal.mjs";
 import { stateRoot } from "./lib/state.mjs";
@@ -122,47 +121,72 @@ async function handleSetup(argv) {
 // Review
 // ------------------------------------------------------------------
 
+const REVIEW_SCOPES = new Set(["auto", "working-tree", "branch"]);
+
+// Permissions for a review session. Plan denies edits. Shell and subagents
+// stay available because OpenCode's /review command runs git and may call Explore.
+const REVIEW_SESSION = { readOnly: true, allowShell: true, allowSubagent: true };
+const REVIEW_PROMPT = { agent: "plan", allowShell: true, allowSubagent: true };
+
+async function resolveReviewTarget(client, options) {
+  const scope = options.scope ?? "auto";
+  if (!REVIEW_SCOPES.has(scope)) {
+    throw new Error(`Unsupported review scope "${scope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`);
+  }
+  if (options.base) {
+    return { kind: "branch", base: options.base, label: `branch diff against ${options.base}`, commandText: options.base };
+  }
+  if (scope === "working-tree") {
+    return { kind: "working", label: "working tree changes", commandText: "" };
+  }
+  if (scope === "auto") {
+    const status = await client.vcsStatus();
+    if (status.length > 0) {
+      return { kind: "working", label: "working tree changes", commandText: "", status };
+    }
+  }
+  const base = await client.vcsBase();
+  if (!base?.name) {
+    throw new Error("Unable to detect the repository review base. Pass --base <ref> or use --scope working-tree.");
+  }
+  return { kind: "branch", base: base.name, label: `branch diff against ${base.name}`, commandText: base.name };
+}
+
+async function withReviewSession(workspace, job, title, run) {
+  return runTrackedJob(workspace, job, async ({ report, log }) => {
+    report("starting", "Connecting to OpenCode server...");
+    const client = await connect({ cwd: workspace });
+    report("reviewing", "Creating review session...");
+    const session = await client.createSession({ title, ...REVIEW_SESSION });
+    upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
+    return run({ client, session, report, log });
+  });
+}
+
 async function handleReview(argv) {
-  const { options } = parseArgs(argv, {
+  const { options, positional } = parseArgs(argv, {
     valueOptions: ["base", "scope"],
     booleanOptions: ["wait", "background"],
   });
+
+  const focus = positional.join(" ").trim();
+  if (focus) {
+    console.error(`\`/opencode:review\` uses OpenCode's built-in /review and does not support custom focus text. Retry with \`/opencode:adversarial-review ${focus}\`.`);
+    process.exit(1);
+  }
 
   const workspace = await resolveWorkspace();
   const job = createJobRecord(workspace, "review", { base: options.base });
 
   try {
-    const result = await runTrackedJob(workspace, job, async ({ report, log }) => {
-      report("starting", "Connecting to OpenCode server...");
-      const client = await connect({ cwd: workspace });
+    const result = await withReviewSession(workspace, job, `Code Review ${job.id}`, async ({ client, session, report, log }) => {
+      const target = await resolveReviewTarget(client, options);
+      report("reviewing", "Running OpenCode /review...");
+      log(`Built-in /review target: ${target.label}`);
 
-      report("reviewing", "Creating review session...");
-      const session = await client.createSession({ title: `Code Review ${job.id}`, readOnly: true });
-      upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
-
-      const prompt = await buildReviewPrompt(workspace, {
-        base: options.base,
-        adversarial: false,
-      }, PLUGIN_ROOT);
-
-      report("reviewing", "Running review...");
-      log(`Prompt length: ${prompt.length} chars`);
-
-      const response = await client.sendPrompt(session.id, prompt, {
-        agent: "plan", // read-only agent for reviews
-      });
-
+      const response = await client.sendCommand(session.id, "review", target.commandText, REVIEW_PROMPT);
       report("finalizing", "Processing review output...");
-
-      // Try to parse structured output
-      const text = extractResponseText(response);
-      let structured = tryParseJson(text);
-
-      return {
-        rendered: structured ? renderReview(structured) : text,
-        raw: response,
-        structured,
-      };
+      return { rendered: renderNativeReview(extractResponseText(response), target) };
     });
 
     console.log(result.rendered);
@@ -186,32 +210,27 @@ async function handleAdversarialReview(argv) {
   });
 
   try {
-    const result = await runTrackedJob(workspace, job, async ({ report, log }) => {
-      report("starting", "Connecting to OpenCode server...");
-      const client = await connect({ cwd: workspace });
-
-      report("reviewing", "Creating adversarial review session...");
-      const session = await client.createSession({ title: `Adversarial Review ${job.id}`, readOnly: true });
-      upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
-
-      const prompt = await buildReviewPrompt(workspace, {
-        base: options.base,
-        adversarial: true,
+    const result = await withReviewSession(workspace, job, `Adversarial Review ${job.id}`, async ({ client, session, report, log }) => {
+      const target = await resolveReviewTarget(client, options);
+      const diffs = await client.vcsDiff(target.kind === "branch"
+        ? { mode: "committed", base: target.base }
+        : { mode: "working" });
+      const files = target.kind === "working" ? (target.status ?? await client.vcsStatus()) : diffs;
+      const prompt = buildAdversarialReviewPrompt(PLUGIN_ROOT, {
+        targetLabel: target.label,
         focus,
-      }, PLUGIN_ROOT);
+        files,
+        diffs,
+      });
 
       report("reviewing", "Running adversarial review...");
       log(`Prompt length: ${prompt.length} chars, focus: ${focus || "(none)"}`);
 
-      const response = await client.sendPrompt(session.id, prompt, {
-        agent: "plan",
-      });
-
+      const response = await client.sendPrompt(session.id, prompt, REVIEW_PROMPT);
       report("finalizing", "Processing review output...");
 
       const text = extractResponseText(response);
-      let structured = tryParseJson(text);
-
+      const structured = tryParseJson(text);
       return {
         rendered: structured ? renderReview(structured) : text,
         raw: response,
@@ -323,12 +342,10 @@ async function handleTask(argv) {
       }
       upsertJob(workspace, { id: job.id, opencodeSessionId: sessionId });
 
-      const prompt = buildTaskPrompt(taskText, { write: isWrite });
-
       report("investigating", "Sending task to OpenCode...");
-      log(`Agent: ${agentName}, Write: ${isWrite}, Prompt: ${prompt.length} chars`);
+      log(`Agent: ${agentName}, Write: ${isWrite}, Prompt: ${taskText.length} chars`);
 
-      const response = await client.sendPrompt(sessionId, prompt, {
+      const response = await client.sendPrompt(sessionId, taskText, {
         agent: agentName,
         model: options.model,
         readOnly: !isWrite,
@@ -397,10 +414,9 @@ async function handleTaskWorker(argv) {
       }
       upsertJob(workspace, { id: jobId, opencodeSessionId: sessionId });
 
-      const prompt = buildTaskPrompt(taskText, { write: isWrite });
       report("investigating", "Running task...");
 
-      const response = await client.sendPrompt(sessionId, prompt, {
+      const response = await client.sendPrompt(sessionId, taskText, {
         agent: agentName,
         model: options.model,
         readOnly: !isWrite,

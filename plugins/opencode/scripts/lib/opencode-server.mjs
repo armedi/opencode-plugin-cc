@@ -58,15 +58,24 @@ export function extractResponseText(message) {
     .join("\n");
 }
 
-function headlessPermissions(readOnly) {
+function headlessPermissions(readOnly, allow = []) {
   const rules = [{ action: "question", resource: "*", effect: "deny" }];
   if (readOnly) {
-    // A plan agent alone does not prevent shell mutations or writable children.
+    // A plan agent denies edits, but its shell permission can still mutate the
+    // tree. Task sessions deny shell and subagents too. Review sessions opt
+    // back in: OpenCode's built-in /review runs git and may call Explore.
     for (const action of ["edit", "shell", "subagent"]) {
-      rules.push({ action, resource: "*", effect: "deny" });
+      if (!allow.includes(action)) rules.push({ action, resource: "*", effect: "deny" });
     }
   }
   return rules;
+}
+
+function allowedActions(options) {
+  return [
+    ...(options.allowShell ? ["shell"] : []),
+    ...(options.allowSubagent ? ["subagent"] : []),
+  ];
 }
 
 export function createClient(baseUrl, opts = {}) {
@@ -90,8 +99,9 @@ export function createClient(baseUrl, opts = {}) {
     baseUrl,
     health: () => native.server.info({ signal: AbortSignal.timeout(3_000) }),
     listSessions: () => native.session.list({ directory: opts.directory }, requestOptions()),
-    createSession: ({ readOnly = false, model, ...input } = {}) => native.session.create({
-      ...input, location, model: parseModel(model), permissions: headlessPermissions(readOnly),
+    createSession: ({ readOnly = false, allowShell = false, allowSubagent = false, model, ...input } = {}) => native.session.create({
+      ...input, location, model: parseModel(model),
+      permissions: headlessPermissions(readOnly, allowedActions({ allowShell, allowSubagent })),
     }, requestOptions()),
     getSession: (sessionID) => native.session.get({ sessionID }, requestOptions()),
     deleteSession: (sessionID) => native.session.remove({ sessionID }, requestOptions()),
@@ -106,6 +116,9 @@ export function createClient(baseUrl, opts = {}) {
     listProviders: () => native.provider.list({ location }, requestOptions()),
     getConfig: () => native.config.get({ location }, requestOptions()),
     subscribeEvents: (options) => native.event.subscribe(options),
+    vcsBase: async () => (await native.vcs.base({ location }, requestOptions())).data,
+    vcsStatus: async () => (await native.vcs.status({ location }, requestOptions())).data ?? [],
+    vcsDiff: async ({ mode, base } = {}) => (await native.vcs.diff({ location, mode, base }, requestOptions())).data ?? [],
 
     // Only an idle SESSION completes a job. A completed assistant tool-call
     // message is an intermediate step, not a terminal result in V2.
@@ -129,14 +142,14 @@ export function createClient(baseUrl, opts = {}) {
       };
     },
 
-    sendPromptAsync: async (sessionID, text, options = {}) => {
+    prepareSession: async (sessionID, options = {}) => {
       if (options.agent) await native.session.switchAgent({ sessionID, agent: options.agent }, requestOptions());
       // Without an explicit --model, use the model configured for the agent
       // instead of letting the server fall back to its own default.
       const model = options.model ? parseModel(options.model) : await agentModel(options.agent);
       if (model) await native.session.switchModel({ sessionID, model }, requestOptions());
       const session = await client.getSession(sessionID);
-      const headless = headlessPermissions(options.readOnly || options.agent === "plan");
+      const headless = headlessPermissions(options.readOnly || options.agent === "plan", allowedActions(options));
       await native.session.update({
         sessionID,
         permissions: [
@@ -145,16 +158,30 @@ export function createClient(baseUrl, opts = {}) {
           ...headless,
         ],
       }, requestOptions());
+      return session;
+    },
+
+    sendPromptAsync: async (sessionID, text, options = {}) => {
+      await client.prepareSession(sessionID, options);
       return native.session.prompt({ sessionID, text, delivery: "queue" }, requestOptions());
     },
 
-    sendPrompt: async (sessionID, text, options = {}) => {
-      const admitted = await client.sendPromptAsync(sessionID, text, options);
+    // session.command returns 204. The built-in command admits its own prompt
+    // before that response, so completion is the next idle timestamp after the
+    // session's pre-command clock.
+    sendCommand: async (sessionID, name, text = "", options = {}) => {
+      const before = await client.prepareSession(sessionID, options);
+      const startedAt = Math.max(before.time?.idle || 0, before.time?.updated || 0) + 1;
+      await native.session.command({ sessionID, name, text, delivery: "queue" }, requestOptions());
+      return client.waitForSession(sessionID, startedAt);
+    },
+
+    waitForSession: async (sessionID, startedAt) => {
       const signal = AbortSignal.timeout(PROMPT_TIMEOUT_MS);
       try {
         while (true) {
           signal.throwIfAborted();
-          const result = await client.readSessionResult(sessionID, admitted.time.created, signal);
+          const result = await client.readSessionResult(sessionID, startedAt, signal);
           if (result.terminal) {
             if (result.outcome !== "succeeded" || !result.message) {
               throw new Error(result.error || `OpenCode session ${result.outcome || "ended without a response"}.`);
@@ -171,6 +198,11 @@ export function createClient(baseUrl, opts = {}) {
         await client.abortSession(sessionID).catch(() => {});
         throw error;
       }
+    },
+
+    sendPrompt: async (sessionID, text, options = {}) => {
+      const admitted = await client.sendPromptAsync(sessionID, text, options);
+      return client.waitForSession(sessionID, admitted.time.created);
     },
   };
   return client;

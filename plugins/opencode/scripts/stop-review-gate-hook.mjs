@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 // Stop review gate hook for the OpenCode companion.
-// When enabled, runs a targeted OpenCode review on Claude's response before
-// allowing the session to stop. If issues are found, the stop is blocked.
+// When enabled, asks OpenCode to review the previous Claude turn before the
+// session stops. The built-in /review command is not used here: that command
+// reviews git state, and this gate reviews one Claude turn.
 
 import process from "node:process";
 import fs from "node:fs";
@@ -12,77 +13,94 @@ import { loadState } from "./lib/state.mjs";
 import { isServerRunning, connect, extractResponseText } from "./lib/opencode-server.mjs";
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(import.meta.dirname, "..");
+const ACTIVE_JOB = new Set(["pending", "queued", "running", "starting", "investigating", "finalizing"]);
+
+function readHookInput() {
+  const raw = fs.readFileSync(0, "utf8").trim();
+  if (!raw) return {};
+  return JSON.parse(raw);
+}
+
+function runningTaskNote(state, sessionId) {
+  const jobs = state.jobs ?? [];
+  const running = jobs.find((job) => ACTIVE_JOB.has(job.status) && (!sessionId || job.sessionId === sessionId));
+  return running
+    ? `OpenCode task ${running.id} is still running. Check /opencode:status and use /opencode:cancel ${running.id} if you want to stop it before ending the session.`
+    : null;
+}
+
+function buildStopReviewPrompt(input) {
+  const lastAssistantMessage = String(input.last_assistant_message ?? "").trim();
+  const template = fs.readFileSync(path.join(PLUGIN_ROOT, "prompts", "stop-review-gate.md"), "utf8");
+  const block = lastAssistantMessage ? ["Previous Claude response:", lastAssistantMessage].join("\n") : "";
+  return template.replaceAll("{{CLAUDE_RESPONSE_BLOCK}}", block);
+}
+
+function parseStopReviewOutput(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) {
+    return { ok: false, reason: "The stop-time OpenCode review returned no final output. Run /opencode:review manually or bypass the gate." };
+  }
+  const firstLine = text.split(/\r?\n/, 1)[0].trim();
+  if (firstLine.startsWith("ALLOW:")) return { ok: true, reason: null };
+  if (firstLine.startsWith("BLOCK:")) {
+    const reason = firstLine.slice("BLOCK:".length).trim() || text;
+    return {
+      ok: false,
+      reason: `OpenCode stop-time review found issues that still need fixes before ending the session: ${reason}`,
+    };
+  }
+  return {
+    ok: false,
+    reason: "The stop-time OpenCode review returned an unexpected answer. Run /opencode:review manually or bypass the gate.",
+  };
+}
+
+function emitDecision(payload) {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function logNote(message) {
+  if (message) process.stderr.write(`${message}\n`);
+}
 
 async function main() {
-  const workspace = await resolveWorkspace();
-
-  // Check if review gate is enabled
+  const input = readHookInput();
+  const workspace = await resolveWorkspace(input.cwd || process.env.CLAUDE_PROJECT_DIR);
   const state = loadState(workspace);
+  const note = runningTaskNote(state, input.session_id);
+
   if (!state.config?.reviewGate) {
-    // Gate is disabled, allow stop
-    console.log("ALLOW: Review gate is disabled.");
+    logNote(note);
     return;
   }
 
-  // Check if server is available
   if (!(await isServerRunning())) {
-    console.log("ALLOW: OpenCode server not running.");
+    logNote("OpenCode is not set up for the review gate. Run /opencode:setup.");
+    logNote(note);
     return;
   }
-
-  // Read the Claude response from stdin (piped by Claude Code)
-  let claudeResponse = "";
-  if (!process.stdin.isTTY) {
-    claudeResponse = await new Promise((resolve) => {
-      let data = "";
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", (chunk) => (data += chunk));
-      process.stdin.on("end", () => resolve(data));
-      // Timeout after 5 seconds of no input
-      setTimeout(() => resolve(data), 5000);
-    });
-  }
-
-  if (!claudeResponse.trim()) {
-    console.log("ALLOW: No response to review.");
-    return;
-  }
-
-  // Load the stop-review-gate prompt template
-  const templatePath = path.join(PLUGIN_ROOT, "prompts", "stop-review-gate.md");
-  const template = fs.readFileSync(templatePath, "utf8");
-  const prompt = template.replace(
-    "{{CLAUDE_RESPONSE_BLOCK}}",
-    `<claude_response>\n${claudeResponse}\n</claude_response>`
-  );
 
   try {
     const client = await connect({ cwd: workspace });
-    const session = await client.createSession({ title: "Stop Review Gate", readOnly: true });
-
-    const response = await client.sendPrompt(session.id, prompt, {
-      agent: "plan", // read-only review
+    const session = await client.createSession({ title: "Stop Review Gate", readOnly: true, allowShell: true });
+    const response = await client.sendPrompt(session.id, buildStopReviewPrompt(input), {
+      agent: "plan",
+      allowShell: true,
     });
-
-    // Extract the verdict
-    const text = extractResponseText(response);
-    const firstLine = text.trim().split("\n")[0];
-
-    if (firstLine.startsWith("BLOCK")) {
-      // Output BLOCK to stderr so Claude Code sees it
-      process.stderr.write(`OpenCode review gate: ${firstLine}\n`);
-      console.log(firstLine);
-      process.exit(1); // Non-zero exit blocks the stop
-    } else {
-      console.log(firstLine || "ALLOW: No issues found.");
+    const verdict = parseStopReviewOutput(extractResponseText(response));
+    if (!verdict.ok) {
+      emitDecision({ decision: "block", reason: note ? `${note} ${verdict.reason}` : verdict.reason });
+      return;
     }
+    logNote(note);
   } catch (err) {
-    // On error, allow the stop (don't block on failures)
-    console.log(`ALLOW: Review gate error: ${err.message}`);
+    const reason = `The stop-time OpenCode review failed: ${err.message}`;
+    emitDecision({ decision: "block", reason: note ? `${note} ${reason}` : reason });
   }
 }
 
 main().catch((err) => {
-  console.log(`ALLOW: Unhandled error: ${err.message}`);
-  process.exit(0);
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+  process.exitCode = 1;
 });

@@ -1,11 +1,11 @@
 ---
 description: Run a steerable adversarial OpenCode review that challenges implementation and design decisions
-argument-hint: '[--wait|--background] [--base <ref>] [focus area or custom review instructions]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [focus ...]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
 
-Run an adversarial OpenCode review through the shared built-in reviewer.
+Run an adversarial OpenCode review through the shared plugin runtime.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
