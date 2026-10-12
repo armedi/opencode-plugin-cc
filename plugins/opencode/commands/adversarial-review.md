@@ -35,7 +35,7 @@ Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
 - Adversarial reviews support custom focus text. Any text after flags is treated as a focus area.
-- The companion script handles `--adversarial` internally.
+- The `adversarial-review` subcommand selects the adversarial prompt.
 
 Foreground flow:
 - Run:

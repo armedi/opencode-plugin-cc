@@ -11,6 +11,4 @@ Run the result command and return output verbatim.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" result $ARGUMENTS
 ```
 
-- Return the command stdout verbatim, exactly as-is.
-- Do not paraphrase, summarize, or add commentary before or after it.
 - Do not fix any issues mentioned in the result output.

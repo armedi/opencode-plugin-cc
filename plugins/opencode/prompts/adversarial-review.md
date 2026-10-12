@@ -46,7 +46,18 @@ A finding should answer:
 </finding_bar>
 
 <structured_output_contract>
-Return only valid JSON matching the provided schema.
+Return only valid JSON with these fields:
+{
+  "verdict": "needs-attention",
+  "summary": "short assessment",
+  "findings": [{
+    "severity": "high",
+    "title": "short title", "file": "path", "line_start": 1, "line_end": 1,
+    "confidence": 0.9, "body": "evidence and impact", "recommendation": "concrete fix"
+  }]
+}
+Severity must be `critical`, `high`, `medium`, or `low`.
+Use an empty findings array when there are no material findings.
 Keep the output compact and specific.
 Use `needs-attention` if there is any material risk worth blocking on.
 Use `approve` only if you cannot support any substantive adversarial finding from the provided context.

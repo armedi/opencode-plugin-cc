@@ -1,49 +1,28 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the OpenCode rescue subagent
 argument-hint: "[--background|--wait] [--resume|--fresh] [--model <provider/model>] [--agent <build|plan>] [what OpenCode should investigate, solve, or continue]"
-context: fork
-allowed-tools: Bash(node:*)
+allowed-tools: Agent AskUserQuestion Bash(node:*)
 ---
 
-Route this request to the `opencode:opencode-rescue` subagent.
-The final user-visible response must be OpenCode's output verbatim.
+User request: $ARGUMENTS
 
-Raw user request:
-$ARGUMENTS
+Give OpenCode the user's request and the context needed to carry it out. If the request refers to an earlier plan, fix, or decision, include that material inline or reference its existing artifact.
 
-Execution mode:
+Reference existing artifacts (plans, specs, issues, commits, diffs) by path or URL instead of duplicating their contents. Include context not captured in those artifacts. Redact sensitive information.
 
-- If the request includes `--background`, run the `opencode:opencode-rescue` subagent in the background.
-- If the request includes `--wait`, run the `opencode:opencode-rescue` subagent in the foreground.
-- If neither flag is present, default to foreground.
-- `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
-- `--model` and `--agent` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
-- If the request includes `--resume`, do not ask whether to continue. The user already chose.
-- If the request includes `--fresh`, do not ask whether to continue. The user already chose.
-- Otherwise, before starting OpenCode, check for a resumable rescue session from this Claude session by running:
+Ask for a missing request or ambiguous required context before dispatching.
+
+Unless the user supplied `--resume` or `--fresh`, check for a resumable session:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" task-resume-candidate --json
 ```
 
-- If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current OpenCode session or start a new one.
-- The two choices must be:
-  - `Continue current OpenCode session`
-  - `Start a new OpenCode session`
-- If the user is clearly giving a follow-up instruction such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", put `Continue current OpenCode session (Recommended)` first.
-- Otherwise put `Start a new OpenCode session (Recommended)` first.
-- If the user chooses continue, add `--resume` before routing to the subagent.
-- If the user chooses a new session, add `--fresh` before routing to the subagent.
-- If the helper reports `available: false`, do not ask. Route normally.
+If `available: true`, use `AskUserQuestion` once: "Continue current OpenCode session" (`--resume`) or "Start a new OpenCode session" (`--fresh`). Recommend continue for follow-ups, otherwise a new session. If unavailable, proceed without asking.
 
-Operating rules:
+Invoke `Agent` with `subagent_type: "opencode:opencode-rescue"`, supplying only the prepared prompt for OpenCode and the routing flags separately. The child forwards that prompt unchanged, not the raw `$ARGUMENTS`. Use `Agent`, not `Skill`; leave dispatch and waiting to the child.
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-companion.mjs" task ...` and return that command's stdout as-is.
-- Return the OpenCode companion stdout verbatim to the user.
-- Do not paraphrase, summarize, rewrite, or add commentary before or after it.
-- Do not ask the subagent to inspect files, monitor progress, poll `/opencode:status`, fetch `/opencode:result`, call `/opencode:cancel`, summarize output, or do follow-up work of its own.
-- Leave `--agent` unset unless the user explicitly asks for a specific agent (build or plan).
-- Leave the model unset unless the user explicitly asks for one.
-- Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
-- If the helper reports that OpenCode is missing or unauthenticated, stop and tell the user to run `/opencode:setup`.
-- If the user did not supply a request, ask what OpenCode should investigate or fix.
+- `--background` runs the child in the background; otherwise use foreground (`--wait`). These flags control Claude execution, not the OpenCode task text.
+- Pass explicit `--resume`, `--fresh`, `--model`, and `--agent` selections to the child, outside the task text. Leave model and agent unset unless requested. Fresh/resume changes session routing, not context preparation.
+
+Return the child's terminal OpenCode output verbatim, without commentary. If OpenCode is missing or unauthenticated, direct the user to `/opencode:setup`.

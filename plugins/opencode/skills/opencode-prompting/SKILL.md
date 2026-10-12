@@ -4,35 +4,14 @@ description: Best practices for crafting effective prompts when delegating tasks
 user-invocable: false
 ---
 
-# OpenCode Prompting Guide
+# OpenCode Prompting
 
-Use this skill to shape prompts before forwarding to the OpenCode companion runtime.
+The parent prepares the prompt; the rescue child forwards it unchanged. OpenCode does not inherit the Claude conversation.
 
-## Prompt Structure
+Give OpenCode the user's request and the context needed to carry it out. For an earlier plan, fix, or decision, reference its existing artifact by path or URL, or include the material inline if it exists only in chat.
 
-A good OpenCode task prompt should:
-1. **State the goal clearly** -- What should be accomplished?
-2. **Provide context** -- What files, functions, or systems are involved?
-3. **Define success criteria** -- How do we know it's done?
-4. **Set constraints** -- What should NOT be changed?
+Include relevant constraints, findings, attempted fixes, and verification criteria. Preserve the user's scope, distinguish unresolved choices, and identify later updates that supersede artifacts. Redact sensitive information.
 
-## Agent Selection
+Have OpenCode read required sources and report any it cannot access. Ask the user about missing or ambiguous context before dispatch. Fresh and resumed sessions both need relevant new context.
 
-OpenCode has two primary agents:
-- **build** (default): Full read/write access, can execute commands, edit files, and make changes
-- **plan**: Read-only analysis mode, good for investigation and architecture planning
-
-## Best Practices
-
-- Be specific about file paths and function names when possible
-- Include error messages or test failures verbatim
-- Specify the programming language and framework context
-- If debugging, include reproduction steps
-- For refactoring, describe the desired end state
-
-## Anti-patterns
-
-- Do not ask OpenCode to "fix everything" without specifics
-- Do not include irrelevant context that dilutes the prompt
-- Do not ask for multiple unrelated tasks in one prompt
-- Do not assume OpenCode knows your project's conventions without telling it
+For task-specific examples, see [prompt recipes](references/opencode-prompt-recipes.md). For vague or conflicting requests, see [anti-patterns](references/opencode-prompt-antipatterns.md).

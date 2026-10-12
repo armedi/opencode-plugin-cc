@@ -104,6 +104,13 @@ Model references use `provider/model` or `provider/model#variant`. An explicit
 `--model` applies to both foreground and background tasks; otherwise OpenCode
 uses its configured default. Resuming reuses the same OpenCode session.
 
+Claude prepares the rescue prompt with the context needed for the request,
+referencing existing artifacts by path or URL and including conversation-only
+details inline. The child forwards only that prompt unchanged, not the raw
+command arguments. For `/opencode:rescue --fresh implement the plan`, this means
+supplying the plan's path or its inline contents; `--fresh` changes session
+routing, not context preparation.
+
 ### Permissions and review gate
 
 The companion **never rewrites global OpenCode permissions**. Delegated sessions
