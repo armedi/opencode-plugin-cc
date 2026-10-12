@@ -163,7 +163,9 @@ export function createClient(baseUrl, opts = {}) {
 
     sendPromptAsync: async (sessionID, text, options = {}) => {
       await client.prepareSession(sessionID, options);
-      return native.session.prompt({ sessionID, text, delivery: "queue" }, requestOptions());
+      // Keep default steering delivery so the task is consumed alongside any
+      // pending Plan reminder, rather than leaving only the reminder runnable.
+      return native.session.prompt({ sessionID, text }, requestOptions());
     },
 
     // session.command returns 204. The built-in command admits its own prompt
@@ -172,7 +174,7 @@ export function createClient(baseUrl, opts = {}) {
     sendCommand: async (sessionID, name, text = "", options = {}) => {
       const before = await client.prepareSession(sessionID, options);
       const startedAt = Math.max(before.time?.idle || 0, before.time?.updated || 0) + 1;
-      await native.session.command({ sessionID, name, text, delivery: "queue" }, requestOptions());
+      await native.session.command({ sessionID, name, text }, requestOptions());
       return client.waitForSession(sessionID, startedAt);
     },
 

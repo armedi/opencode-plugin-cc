@@ -64,7 +64,7 @@ async function serveV2(t, {
     if (path === `/api/session/${sessionID}/prompt`) {
       if (!body.text || body.parts || body.agent || body.model) return json({ error: "invalid prompt" }, 400);
       admitted = true;
-      return json({ data: { id: "msg_user", sessionID, time: { created: now }, type: "user", payload: { text: body.text }, delivery: "queue" } });
+      return json({ data: { id: "msg_user", sessionID, time: { created: now }, type: "user", payload: { text: body.text }, delivery: body.delivery ?? "steer" } });
     }
     if (path === `/api/session/${sessionID}/command` && req.method === "POST") {
       if (!body?.name) return json({ error: "missing command" }, 400);
@@ -130,6 +130,8 @@ test("prompt admission waits past tool-call completion and applies agent/model/p
   assert.ok(session.permissions.some((p) => p.action === "shell" && p.effect === "deny"));
   const response = await client.sendPrompt(sessionID, "Review the code", { agent: "plan", model: "vendor/model/name#high" });
   assert.equal(response.id, "msg_final");
+  const prompt = calls.find((c) => c.path.endsWith("/prompt"));
+  assert.equal(prompt.body.delivery ?? "steer", "steer", "Immediate tasks must not be deferred behind the Plan reminder");
   const model = calls.find((c) => c.path.endsWith("/model"));
   assert.deepEqual(model.body, { model: { providerID: "vendor", id: "model/name", variant: "high" } });
   assert.equal(calls.find((c) => c.path.endsWith("/agent")).body.agent, "plan");
@@ -227,7 +229,9 @@ test("review runs OpenCode's built-in /review command instead of a pasted diff",
   assert.match(working.stdout, /Target: working tree changes/);
   assert.match(working.stdout, /Final V2 output/);
   const command = dirty.calls.find((c) => c.path.endsWith("/command"));
-  assert.deepEqual(command.body, { name: "review", text: "", delivery: "queue" });
+  assert.equal(command.body.name, "review");
+  assert.equal(command.body.text, "");
+  assert.equal(command.body.delivery ?? "steer", "steer", "Immediate reviews must not be queued behind the Plan reminder");
   assert.equal(dirty.calls.filter((c) => c.path.endsWith("/prompt")).length, 0);
   const permissions = dirty.calls.find((c) => c.method === "PATCH").body.permissions;
   assert.ok(permissions.some((p) => p.action === "edit" && p.effect === "deny"));
