@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-line installer for opencode-plugin-cc
+# Marketplace preparation for opencode-plugin-cc (install explicitly in Claude Code)
 # Usage (inside Claude Code):
 #   ! curl -fsSL https://raw.githubusercontent.com/armedi/opencode-plugin-cc/main/install.sh | bash
 #
@@ -15,10 +15,7 @@ BRANCH="main"
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 MARKETPLACES_DIR="$CLAUDE_DIR/plugins/marketplaces"
-CACHE_DIR="$CLAUDE_DIR/plugins/cache/$MARKETPLACE_NAME/$PLUGIN_NAME"
 KNOWN_MKT="$CLAUDE_DIR/plugins/known_marketplaces.json"
-INSTALLED="$CLAUDE_DIR/plugins/installed_plugins.json"
-SETTINGS="$CLAUDE_DIR/settings.json"
 
 # Colors
 RED='\033[0;31m'
@@ -36,7 +33,7 @@ command -v node >/dev/null || error "Node.js 22 or later is required."
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || error "Node.js 22 or later is required."
 command -v npm >/dev/null || error "npm is required to install the V2 client."
 
-mkdir -p "$CLAUDE_DIR/plugins/marketplaces" "$CLAUDE_DIR/plugins/cache"
+mkdir -p "$MARKETPLACES_DIR"
 
 # --- Step 1: Clone marketplace ---
 MKT_DIR="$MARKETPLACES_DIR/$MARKETPLACE_NAME"
@@ -61,18 +58,14 @@ PLUGIN_JSON="$MKT_DIR/plugins/$PLUGIN_NAME/.claude-plugin/plugin.json"
 [ -f "$PLUGIN_JSON" ] || error "plugin.json not found at $PLUGIN_JSON"
 
 VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_JSON'))['version'])" 2>/dev/null || echo "1.0.0")
-GIT_SHA=$(git -C "$MKT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 
-info "Plugin version: $VERSION (sha: ${GIT_SHA:0:12})"
+info "Plugin version: $VERSION"
 
-# --- Step 3: Copy plugin to cache ---
-CACHE_VERSION_DIR="$CACHE_DIR/$VERSION"
-rm -rf "$CACHE_VERSION_DIR"
-mkdir -p "$CACHE_VERSION_DIR"
-cp -R "$MKT_DIR/plugins/$PLUGIN_NAME/." "$CACHE_VERSION_DIR/"
-npm --prefix "$CACHE_VERSION_DIR" ci --omit=dev --ignore-scripts --workspaces=false
-info "Plugin cached at $CACHE_VERSION_DIR"
+# --- Step 3: Prepare dependencies in the marketplace source ---
+# Claude Code will copy this source into its cache on explicit /plugin install.
+npm --prefix "$MKT_DIR/plugins/$PLUGIN_NAME" ci --omit=dev --ignore-scripts --workspaces=false
+info "Plugin dependencies prepared in the marketplace."
 
 # --- Step 4: Register marketplace in known_marketplaces.json ---
 if [ ! -f "$KNOWN_MKT" ]; then
@@ -93,61 +86,16 @@ with open('$KNOWN_MKT', 'w') as f:
     f.write('\n')
 " || warn "Could not update known_marketplaces.json (non-fatal)"
 
-# --- Step 5: Register plugin in installed_plugins.json ---
-if [ ! -f "$INSTALLED" ]; then
-  echo '{"version": 2, "plugins": {}}' > "$INSTALLED"
-fi
-
-python3 -c "
-import json
-with open('$INSTALLED', 'r') as f:
-    data = json.load(f)
-if 'plugins' not in data:
-    data['plugins'] = {}
-data['plugins']['$PLUGIN_NAME@$MARKETPLACE_NAME'] = [{
-    'scope': 'user',
-    'installPath': '$CACHE_VERSION_DIR',
-    'version': '$VERSION',
-    'installedAt': '$NOW',
-    'lastUpdated': '$NOW',
-    'gitCommitSha': '$GIT_SHA'
-}]
-with open('$INSTALLED', 'w') as f:
-    json.dump(data, f, indent=2)
-    f.write('\n')
-" || error "Failed to update installed_plugins.json"
-
-# --- Step 6: Enable the installed plugin at user scope ---
-# Cache/registry entries alone do not make slash commands available. Claude
-# Code loads plugins enabled in settings.json (the same setting /plugin install
-# and /plugin enable manage). Preserve every unrelated setting and plugin.
-python3 - "$SETTINGS" "$PLUGIN_NAME@$MARKETPLACE_NAME" <<'PY' || error "Failed to enable plugin. Run /plugin install opencode@armedi-opencode-plugin-cc inside Claude Code."
-import json, os, sys, tempfile
-settings_path, plugin_id = sys.argv[1:]
-if os.path.exists(settings_path):
-    with open(settings_path) as f:
-        settings = json.load(f)
-else:
-    settings = {}
-enabled = settings.setdefault('enabledPlugins', {})
-enabled[plugin_id] = True
-with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(settings_path), delete=False) as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-    tmp = f.name
-os.replace(tmp, settings_path)
-PY
-info "Plugin enabled at user scope."
-
 # --- Done ---
 echo ""
-info "Installation complete!"
+info "Marketplace ready. The plugin has not been installed or enabled by this script."
 echo ""
 echo -e "  ${GREEN}Next step:${NC} Run this command inside Claude Code:"
 echo ""
+echo -e "    ${YELLOW}/plugin install $PLUGIN_NAME@$MARKETPLACE_NAME${NC}"
+echo ""
+echo -e "  Choose your installation scope, then reload and verify:"
+echo ""
 echo -e "    ${YELLOW}/reload-plugins${NC}"
-echo ""
-echo -e "  Then verify with:"
-echo ""
 echo -e "    ${YELLOW}/opencode:setup${NC}"
 echo ""

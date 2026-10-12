@@ -36,10 +36,10 @@ Inside Claude Code:
 ! curl -fsSL https://raw.githubusercontent.com/armedi/opencode-plugin-cc/main/install.sh | bash
 ```
 
-The installer clones this fork, caches version 2.0.0, installs its locked V2
-client dependencies, registers `opencode@armedi-opencode-plugin-cc`, and enables
-it at user scope in Claude Code's `settings.json`, preserving other settings.
-It tries SSH first, then HTTPS.
+The script clones this fork, prepares its locked V2 client dependencies in the
+marketplace source, and registers the marketplace. It tries SSH first, then HTTPS.
+It does **not** install or enable the plugin, populate Claude Code's plugin cache,
+or change `installed_plugins.json` or `settings.json`.
 
 If the upstream plugin is installed, uninstall it first to avoid duplicate
 commands and hooks:
@@ -48,22 +48,21 @@ commands and hooks:
 /plugin uninstall opencode@tasict-opencode-plugin-cc
 ```
 
-Then reload and verify:
+Install the plugin in Claude Code:
+
+```text
+/plugin install opencode@armedi-opencode-plugin-cc
+```
+
+Choose your installation scope in the plugin panel (for example,
+**Install for you (user scope)**). Then reload and verify:
 
 ```text
 /reload-plugins
 /opencode:setup
 ```
 
-If you ran an older installer and `/opencode:setup` is missing, complete the
-Claude Code activation step:
-
-```text
-/plugin install opencode@armedi-opencode-plugin-cc
-```
-
-Choose **Install for you (user scope)** in the plugin panel. If it is already
-installed but disabled, enable it from the **Installed** tab (or run
+If the plugin is already installed but disabled, enable it from the **Installed** tab (or run
 `/plugin enable opencode@armedi-opencode-plugin-cc`). Then run `/reload-plugins`
 and `/opencode:setup`. The marketplace was already registered by the installer;
 if Claude Code cannot find it, add it with
@@ -188,8 +187,9 @@ The old V1 idle/pgrep/strict-terminal environment settings are no longer used.
   plugin needs `npm ci --omit=dev --ignore-scripts --workspaces=false` in its root.
 - **Permission requested:** configure a narrow V2 `permissions` rule for the
   reported action/resource; the companion deliberately does not auto-approve.
-- **Plugin not loading:** rerun the installer, `/reload-plugins`, and restart
-  Claude Code if necessary.
+- **Plugin not loading:** rerun the script, explicitly run
+  `/plugin install opencode@armedi-opencode-plugin-cc`, then `/reload-plugins`.
+  Restart Claude Code if necessary.
 
 V2 reads global `~/.config/opencode/opencode.json(c)` (or `$XDG_CONFIG_HOME`)
 and project `opencode.json(c)` / `.opencode/opencode.json(c)` through normal
