@@ -45,6 +45,7 @@ async function serveV2(t, { outcome = "succeeded", permission = false, active = 
     if (req.headers.authorization !== authorization) return json({ error: "unauthorized" }, 401);
     const path = url.pathname;
     if (path === "/api/info") return json({ version: "2.0.26" });
+    if (path === "/api/agent") return json({ data: [{ id: "plan", model: { providerID: "cfg", id: "agent-model" } }] });
     if (path === "/api/session" && req.method === "POST") return json({ data: { ...session, ...body } });
     if (path === `/api/session/${sessionID}/agent` || path === `/api/session/${sessionID}/model`) {
       res.writeHead(204).end(); return;
@@ -125,6 +126,12 @@ test("prompt admission waits past tool-call completion and applies agent/model/p
   assert.ok(permissions.some((p) => p.action === "question" && p.effect === "deny"));
   assert.ok(permissions.some((p) => p.action === "edit" && p.resource === "*" && p.effect === "deny"));
   assert.ok(calls.every((c) => c.headers["x-opencode-directory"] === "/workspace"));
+});
+
+test("prompt without explicit model uses the model configured for the agent", async (t) => {
+  const { client, calls, sessionID } = await serveV2(t);
+  await client.sendPrompt(sessionID, "Review the code", { agent: "plan" });
+  assert.deepEqual(calls.find((c) => c.path.endsWith("/model")).body, { model: { providerID: "cfg", id: "agent-model" } });
 });
 
 test("permission requests fail clearly and interrupt instead of hanging or auto-approving", async (t) => {

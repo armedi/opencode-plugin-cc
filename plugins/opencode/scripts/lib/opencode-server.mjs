@@ -76,6 +76,16 @@ export function createClient(baseUrl, opts = {}) {
   const requestOptions = () => ({ signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const location = opts.directory ? { directory: opts.directory } : undefined;
 
+  const agentModel = async (agent) => {
+    if (!agent) return undefined;
+    try {
+      const agents = await client.listAgents();
+      return (Array.isArray(agents) ? agents : agents?.data)?.find((a) => a.id === agent)?.model;
+    } catch {
+      return undefined; // fall back to the server default
+    }
+  };
+
   const client = {
     baseUrl,
     health: () => native.server.info({ signal: AbortSignal.timeout(3_000) }),
@@ -121,7 +131,10 @@ export function createClient(baseUrl, opts = {}) {
 
     sendPromptAsync: async (sessionID, text, options = {}) => {
       if (options.agent) await native.session.switchAgent({ sessionID, agent: options.agent }, requestOptions());
-      if (options.model) await native.session.switchModel({ sessionID, model: parseModel(options.model) }, requestOptions());
+      // Without an explicit --model, use the model configured for the agent
+      // instead of letting the server fall back to its own default.
+      const model = options.model ? parseModel(options.model) : await agentModel(options.agent);
+      if (model) await native.session.switchModel({ sessionID, model }, requestOptions());
       const session = await client.getSession(sessionID);
       const headless = headlessPermissions(options.readOnly || options.agent === "plan");
       await native.session.update({
