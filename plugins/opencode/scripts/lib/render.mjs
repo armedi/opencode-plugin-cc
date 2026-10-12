@@ -99,42 +99,14 @@ export function renderResult(job, resultData) {
 }
 
 /**
- * Render a review result (structured JSON output).
- * @param {object} review
+ * Render the built-in review's text with its target.
+ * @param {string} text
+ * @param {{ label: string }} target
  * @returns {string}
  */
 export function renderNativeReview(text, target) {
   const body = String(text ?? "").trim() || "OpenCode review completed without any output.";
   return [`# OpenCode Review`, "", `Target: ${target.label}`, "", body, ""].join("\n");
-}
-
-export function renderReview(review) {
-  const lines = [];
-
-  if (review.verdict) {
-    const emoji = review.verdict === "approve" ? "PASS" : "NEEDS ATTENTION";
-    lines.push(`## Review Verdict: ${emoji}\n`);
-  }
-
-  if (review.summary) {
-    lines.push(`${review.summary}\n`);
-  }
-
-  if (review.findings?.length > 0) {
-    lines.push(`### Findings (${review.findings.length})\n`);
-    for (const f of review.findings) {
-      lines.push(`#### ${f.severity?.toUpperCase()}: ${f.title}`);
-      lines.push(`- **File**: ${f.file}:${f.line_start}-${f.line_end}`);
-      lines.push(`- **Confidence**: ${(f.confidence * 100).toFixed(0)}%`);
-      lines.push(`- ${f.body}`);
-      lines.push(`- **Recommendation**: ${f.recommendation}`);
-      lines.push("");
-    }
-  } else {
-    lines.push("No findings.");
-  }
-
-  return lines.join("\n");
 }
 
 /**

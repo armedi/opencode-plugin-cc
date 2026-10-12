@@ -77,7 +77,7 @@ node ~/.claude/plugins/cache/armedi-opencode-plugin-cc/opencode/2.0.0/scripts/op
 Delegate a task:
 
 ```text
-/opencode:rescue grep for XXX in src/ and summarize
+/opencode:delegate grep for XXX in src/ and summarize
 ```
 
 ### Uninstall
@@ -92,8 +92,7 @@ Delegate a task:
 | Command | Purpose |
 | --- | --- |
 | `/opencode:review` | OpenCode's built-in `/review`; supports `--base <ref>` and `--scope` |
-| `/opencode:adversarial-review` | Read-only challenge review with optional focus text |
-| `/opencode:rescue` | Delegate work; supports `--model`, `--agent`, `--resume`, `--fresh`, `--background` |
+| `/opencode:delegate` | Delegate work; supports `--model`, `--agent`, `--resume`, `--fresh`, `--background` |
 | `/opencode:status` | Running/recent jobs for the current repository |
 | `/opencode:result` | Finished output and OpenCode session ID |
 | `/opencode:cancel` | Interrupt the V2 session and stop its companion worker |
@@ -103,15 +102,15 @@ Model references use `provider/model` or `provider/model#variant`. An explicit
 `--model` applies to both foreground and background tasks; otherwise OpenCode
 uses its configured default. Resuming reuses the same OpenCode session.
 
-Claude prepares the rescue prompt with the context needed for the request,
+Claude prepares the delegation prompt with the context needed for the request,
 referencing existing artifacts by path or URL and including conversation-only
 details inline. Claude calls the companion directly with that prepared prompt,
 not through a forwarding Claude subagent or with raw command arguments.
-For `/opencode:rescue --fresh implement the plan`, this means
+For `/opencode:delegate --fresh implement the plan`, this means
 supplying the plan's path or its inline contents; `--fresh` changes session
 routing, not context preparation.
 
-Foreground rescue waits through bounded companion calls. Background rescue uses
+Foreground delegation waits through bounded companion calls. Background delegation uses
 a Claude background Bash waiter, whose completion notification returns the
 terminal report. Both modes retain companion job tracking and OpenCode sessions;
 no forwarding subagent or separate Monitor is needed. Status, result, and cancel
@@ -130,7 +129,7 @@ They can inspect code through read/glob/grep tools, but cannot run tests or shel
 commands. `/opencode:review` is different: it runs OpenCode's built-in `/review`
 on the plan agent, and that command collects the diff with git, so the review
 session allows shell and subagents while still denying edits and questions.
-Adversarial review and the stop gate use that same review permission set.
+The stop gate uses that same review permission set.
 This is permission enforcement, not an OS sandbox; custom tools/plugins
 must also enforce their own permissions. A resumed read-only session retains
 its restrictions; use `--fresh` when switching to writable work.

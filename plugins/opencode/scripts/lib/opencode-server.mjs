@@ -118,7 +118,6 @@ export function createClient(baseUrl, opts = {}) {
     subscribeEvents: (options) => native.event.subscribe(options),
     vcsBase: async () => (await native.vcs.base({ location }, requestOptions())).data,
     vcsStatus: async () => (await native.vcs.status({ location }, requestOptions())).data ?? [],
-    vcsDiff: async ({ mode, base } = {}) => (await native.vcs.diff({ location, mode, base }, requestOptions())).data ?? [],
 
     // Only an idle SESSION completes a job. A completed assistant tool-call
     // message is an intermediate step, not a terminal result in V2.

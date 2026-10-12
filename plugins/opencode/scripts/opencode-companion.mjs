@@ -15,8 +15,7 @@ import { resolveWorkspace } from "./lib/workspace.mjs";
 import { loadState, updateState, upsertJob, generateJobId, jobDataPath, jobLogPath } from "./lib/state.mjs";
 import { buildStatusSnapshot, resolveResultJob, resolveCancelableJob, enrichJob, matchJobReference } from "./lib/job-control.mjs";
 import { createJobRecord, runTrackedJob, getClaudeSessionId } from "./lib/tracked-jobs.mjs";
-import { renderStatus, renderResult, renderReview, renderNativeReview, renderSetup } from "./lib/render.mjs";
-import { buildAdversarialReviewPrompt } from "./lib/prompts.mjs";
+import { renderStatus, renderResult, renderNativeReview, renderSetup } from "./lib/render.mjs";
 import { readJson } from "./lib/fs.mjs";
 import { autoHealJob, autoHealJobs, getSessionLastActivity } from "./lib/auto-heal.mjs";
 import { stateRoot } from "./lib/state.mjs";
@@ -33,7 +32,6 @@ const [subcommand, ...argv] = process.argv.slice(2);
 const handlers = {
   setup: handleSetup,
   review: handleReview,
-  "adversarial-review": handleAdversarialReview,
   task: handleTask,
   "task-worker": handleTaskWorker,
   "task-resume-candidate": handleTaskResumeCandidate,
@@ -128,41 +126,6 @@ const REVIEW_SCOPES = new Set(["auto", "working-tree", "branch"]);
 const REVIEW_SESSION = { readOnly: true, allowShell: true, allowSubagent: true };
 const REVIEW_PROMPT = { agent: "plan", allowShell: true, allowSubagent: true };
 
-async function resolveReviewTarget(client, options) {
-  const scope = options.scope ?? "auto";
-  if (!REVIEW_SCOPES.has(scope)) {
-    throw new Error(`Unsupported review scope "${scope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`);
-  }
-  if (options.base) {
-    return { kind: "branch", base: options.base, label: `branch diff against ${options.base}`, commandText: options.base };
-  }
-  if (scope === "working-tree") {
-    return { kind: "working", label: "working tree changes", commandText: "" };
-  }
-  if (scope === "auto") {
-    const status = await client.vcsStatus();
-    if (status.length > 0) {
-      return { kind: "working", label: "working tree changes", commandText: "", status };
-    }
-  }
-  const base = await client.vcsBase();
-  if (!base?.name) {
-    throw new Error("Unable to detect the repository review base. Pass --base <ref> or use --scope working-tree.");
-  }
-  return { kind: "branch", base: base.name, label: `branch diff against ${base.name}`, commandText: base.name };
-}
-
-async function withReviewSession(workspace, job, title, run) {
-  return runTrackedJob(workspace, job, async ({ report, log }) => {
-    report("starting", "Connecting to OpenCode server...");
-    const client = await connect({ cwd: workspace });
-    report("reviewing", "Creating review session...");
-    const session = await client.createSession({ title, ...REVIEW_SESSION });
-    upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
-    return run({ client, session, report, log });
-  });
-}
-
 async function handleReview(argv) {
   const { options, positional } = parseArgs(argv, {
     valueOptions: ["base", "scope"],
@@ -171,7 +134,7 @@ async function handleReview(argv) {
 
   const focus = positional.join(" ").trim();
   if (focus) {
-    console.error(`\`/opencode:review\` uses OpenCode's built-in /review and does not support custom focus text. Retry with \`/opencode:adversarial-review ${focus}\`.`);
+    console.error("`/opencode:review` uses OpenCode's built-in /review and does not support custom focus text. Use `/opencode:delegate --agent plan` for a review with custom instructions.");
     process.exit(1);
   }
 
@@ -179,8 +142,29 @@ async function handleReview(argv) {
   const job = createJobRecord(workspace, "review", { base: options.base });
 
   try {
-    const result = await withReviewSession(workspace, job, `Code Review ${job.id}`, async ({ client, session, report, log }) => {
-      const target = await resolveReviewTarget(client, options);
+    const result = await runTrackedJob(workspace, job, async ({ report, log }) => {
+      report("starting", "Connecting to OpenCode server...");
+      const client = await connect({ cwd: workspace });
+      report("reviewing", "Creating review session...");
+      const session = await client.createSession({ title: `Code Review ${job.id}`, ...REVIEW_SESSION });
+      upsertJob(workspace, { id: job.id, opencodeSessionId: session.id });
+
+      const scope = options.scope ?? "auto";
+      if (!REVIEW_SCOPES.has(scope)) {
+        throw new Error(`Unsupported review scope "${scope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`);
+      }
+      let target;
+      if (options.base) {
+        target = { label: `branch diff against ${options.base}`, commandText: options.base };
+      } else if (scope === "working-tree" || (scope === "auto" && (await client.vcsStatus()).length > 0)) {
+        target = { label: "working tree changes", commandText: "" };
+      } else {
+        const base = await client.vcsBase();
+        if (!base?.name) {
+          throw new Error("Unable to detect the repository review base. Pass --base <ref> or use --scope working-tree.");
+        }
+        target = { label: `branch diff against ${base.name}`, commandText: base.name };
+      }
       report("reviewing", "Running OpenCode /review...");
       log(`Built-in /review target: ${target.label}`);
 
@@ -196,57 +180,8 @@ async function handleReview(argv) {
   }
 }
 
-async function handleAdversarialReview(argv) {
-  const { options, positional } = parseArgs(argv, {
-    valueOptions: ["base", "scope"],
-    booleanOptions: ["wait", "background"],
-  });
-
-  const focus = positional.join(" ").trim();
-  const workspace = await resolveWorkspace();
-  const job = createJobRecord(workspace, "adversarial-review", {
-    base: options.base,
-    focus,
-  });
-
-  try {
-    const result = await withReviewSession(workspace, job, `Adversarial Review ${job.id}`, async ({ client, session, report, log }) => {
-      const target = await resolveReviewTarget(client, options);
-      const diffs = await client.vcsDiff(target.kind === "branch"
-        ? { mode: "committed", base: target.base }
-        : { mode: "working" });
-      const files = target.kind === "working" ? (target.status ?? await client.vcsStatus()) : diffs;
-      const prompt = buildAdversarialReviewPrompt(PLUGIN_ROOT, {
-        targetLabel: target.label,
-        focus,
-        files,
-        diffs,
-      });
-
-      report("reviewing", "Running adversarial review...");
-      log(`Prompt length: ${prompt.length} chars, focus: ${focus || "(none)"}`);
-
-      const response = await client.sendPrompt(session.id, prompt, REVIEW_PROMPT);
-      report("finalizing", "Processing review output...");
-
-      const text = extractResponseText(response);
-      const structured = tryParseJson(text);
-      return {
-        rendered: structured ? renderReview(structured) : text,
-        raw: response,
-        structured,
-      };
-    });
-
-    console.log(result.rendered);
-  } catch (err) {
-    console.error(`Adversarial review failed: ${err.message}`);
-    process.exit(1);
-  }
-}
-
 // ------------------------------------------------------------------
-// Task (rescue delegation)
+// Task (delegation)
 // ------------------------------------------------------------------
 
 async function handleTask(argv) {
@@ -967,21 +902,5 @@ async function handleConfig(argv) {
   for (const r of envRows) {
     const src = r.source === "env" ? "env" : "default";
     console.log(`- ${r.name} = ${r.value} [${src}] — ${r.description}`);
-  }
-}
-
-/**
- * Try to parse a string as JSON, returning null on failure.
- * @param {string} text
- * @returns {object|null}
- */
-function tryParseJson(text) {
-  // Look for JSON in the text (may be wrapped in markdown code blocks)
-  const jsonMatch = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-  const candidate = jsonMatch ? jsonMatch[1] : text;
-  try {
-    return JSON.parse(candidate.trim());
-  } catch {
-    return null;
   }
 }

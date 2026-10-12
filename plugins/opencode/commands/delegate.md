@@ -1,5 +1,5 @@
 ---
-description: Delegate investigation, an explicit fix request, or follow-up rescue work directly to OpenCode
+description: Delegate investigation, implementation, or follow-up work directly to OpenCode
 argument-hint: "[--background|--wait] [--resume|--fresh] [--model <provider/model>] [--agent <build|plan>] [what OpenCode should investigate, solve, or continue]"
 allowed-tools: Skill Read AskUserQuestion Bash
 ---

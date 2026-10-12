@@ -18,7 +18,7 @@ export function getClaudeSessionId() {
 /**
  * Create a new job record.
  * @param {string} workspacePath
- * @param {string} type - "review" | "adversarial-review" | "task"
+ * @param {string} type - "review" | "task"
  * @param {object} [meta] - additional metadata
  * @returns {object} the created job
  */

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderStatus, renderResult, renderReview, renderSetup } from "../plugins/opencode/scripts/lib/render.mjs";
+import { renderStatus, renderResult, renderSetup } from "../plugins/opencode/scripts/lib/render.mjs";
 
 describe("renderStatus", () => {
   it("renders empty state", () => {
@@ -16,35 +16,6 @@ describe("renderStatus", () => {
     });
     assert.ok(output.includes("task-1"));
     assert.ok(output.includes("investigating"));
-  });
-});
-
-describe("renderReview", () => {
-  it("renders approve verdict", () => {
-    const output = renderReview({ verdict: "approve", summary: "Looks good", findings: [] });
-    assert.ok(output.includes("PASS"));
-    assert.ok(output.includes("No findings"));
-  });
-
-  it("renders findings", () => {
-    const output = renderReview({
-      verdict: "needs-attention",
-      summary: "Issues found",
-      findings: [{
-        file: "src/api.ts",
-        line_start: 10,
-        line_end: 15,
-        severity: "high",
-        title: "SQL injection",
-        body: "User input not sanitized",
-        confidence: 0.9,
-        recommendation: "Use parameterized queries",
-      }],
-    });
-    assert.ok(output.includes("NEEDS ATTENTION"));
-    assert.ok(output.includes("SQL injection"));
-    assert.ok(output.includes("src/api.ts"));
-    assert.ok(output.includes("90%"));
   });
 });
 

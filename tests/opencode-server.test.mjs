@@ -18,7 +18,6 @@ async function serveV2(t, {
   outcome = "succeeded", permission = false, active = false, stall = false, text = "Final V2 output",
   status = [{ file: "src/app.js", additions: 3, deletions: 1, status: "modified" }],
   base = { name: "main", ref: "refs/heads/main", source: "default" },
-  diffs = [{ file: "src/app.js", patch: "@@ -1 +1 @@\n-old\n+new\n", additions: 1, deletions: 1, status: "modified" }],
 } = {}) {
   const sessionID = "ses_fixture";
   const now = Date.now();
@@ -75,7 +74,6 @@ async function serveV2(t, {
     }
     if (path === "/api/vcs/status") return json({ data: status });
     if (path === "/api/vcs/base") return json({ data: base });
-    if (path === "/api/vcs/diff") return json({ data: diffs });
     if (path === "/api/session/active") {
       polls++;
       return json({ data: active || (admitted && polls < 2) ? { [sessionID]: { type: "running" } } : {} });
@@ -254,22 +252,8 @@ test("review runs OpenCode's built-in /review command instead of a pasted diff",
   const rejected = await serveV2(t);
   const focus = await cli(t, rejected.baseUrl)("review", "focus on auth");
   assert.equal(focus.exitCode, 1);
-  assert.match(focus.stderr, /adversarial-review/);
+  assert.match(focus.stderr, /\/opencode:delegate --agent plan/);
   assert.equal(rejected.calls.some((c) => c.path.endsWith("/command")), false);
-});
-
-test("adversarial review sends the challenge prompt filled from the VCS diff", async (t) => {
-  const { baseUrl, calls } = await serveV2(t);
-  const result = await cli(t, baseUrl)("adversarial-review", "auth boundary");
-  assert.equal(result.exitCode, 0, result.stderr);
-  const prompt = calls.find((c) => c.path.endsWith("/prompt")).body.text;
-  assert.match(prompt, /You are OpenCode performing an adversarial software review/);
-  assert.match(prompt, /working tree changes/);
-  assert.match(prompt, /auth boundary/);
-  assert.match(prompt, /primary evidence/);
-  assert.match(prompt, /\+new/);
-  assert.equal(calls.find((c) => c.path === "/api/vcs/diff").query.get("mode"), "working");
-  assert.equal(calls.some((c) => c.path.endsWith("/command")), false);
 });
 
 function runStopHook(baseUrl, workspace, input) {
