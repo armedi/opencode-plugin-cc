@@ -84,12 +84,14 @@ export function spawnDetached(cmd, args, opts = {}) {
   const logFd = opts.logFile ? fs.openSync(opts.logFile, "a") : null;
   let child;
   try {
-    child = spawn(cmd, args, {
+    // node needs no shell; a Windows shell would split args on spaces (the task text).
+    const viaNode = cmd === "node";
+    child = spawn(viaNode ? process.execPath : cmd, args, {
       stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
       detached: true,
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
-      shell: IS_WINDOWS,
+      shell: IS_WINDOWS && !viaNode,
     });
   } finally {
     if (logFd !== null) fs.closeSync(logFd);
